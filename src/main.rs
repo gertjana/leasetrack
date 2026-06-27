@@ -43,8 +43,7 @@ fn load_data() -> Result<LeaseData, String> {
             path.display()
         ));
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
@@ -196,7 +195,7 @@ fn km_at_date(
 struct YearStats {
     year_num: u32,
     start: NaiveDate,
-    end: NaiveDate,       // exclusive — equals start of next year
+    end: NaiveDate, // exclusive — equals start of next year
     km_driven: Option<f64>,
     is_current: bool,
     is_future: bool,
@@ -213,13 +212,17 @@ fn compute_year_stats(data: &LeaseData) -> Vec<YearStats> {
             let is_future = today < start;
             let is_current = !is_future && today < end;
 
-            let km_start =
-                km_at_date(&data.records, cfg.start_odometer, cfg.lease_start, start);
+            let km_start = km_at_date(&data.records, cfg.start_odometer, cfg.lease_start, start);
             let effective_end = if is_current { today } else { end };
             let km_end = if is_future {
                 None
             } else {
-                km_at_date(&data.records, cfg.start_odometer, cfg.lease_start, effective_end)
+                km_at_date(
+                    &data.records,
+                    cfg.start_odometer,
+                    cfg.lease_start,
+                    effective_end,
+                )
             };
 
             let km_driven = match (km_start, km_end) {
@@ -551,9 +554,7 @@ fn cmd_report(data: &LeaseData) -> Result<(), String> {
                     println!();
                     println!(
                         "* Year {} in progress — {} of {} days elapsed",
-                        s.year_num,
-                        days_elapsed as u32,
-                        days_total as u32
+                        s.year_num, days_elapsed as u32, days_total as u32
                     );
                     println!("  Current:   {} km driven", fmt_km_f(km));
                     println!(
@@ -608,7 +609,10 @@ fn cmd_report(data: &LeaseData) -> Result<(), String> {
         } else if proj_diff > 0.0 {
             (format!("{} km over the limit", fmt_km_f(proj_diff)), "⚠")
         } else {
-            (format!("{} km under the limit", fmt_km_f(proj_diff.abs())), "✓")
+            (
+                format!("{} km under the limit", fmt_km_f(proj_diff.abs())),
+                "✓",
+            )
         };
 
         println!();
