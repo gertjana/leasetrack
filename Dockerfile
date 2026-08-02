@@ -17,8 +17,7 @@ RUN mkdir -p core/src cli/src api/src \
  && echo "pub fn _dummy() {}" > core/src/lib.rs \
  && echo "fn main() {}"       > cli/src/main.rs \
  && echo "fn main() {}"       > api/src/main.rs \
- && RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo build --release --package leasetrack-api \
+ && cargo build --release --package leasetrack-api \
  && rm -rf core/src cli/src api/src
 
 # Now copy the real source and rebuild only the application code.
@@ -26,8 +25,10 @@ COPY core/src ./core/src
 COPY cli/src  ./cli/src
 COPY api/src  ./api/src
 
-RUN RUSTFLAGS="-C target-feature=+crt-static" \
-    cargo build --release --package leasetrack-api
+# rust:alpine uses x86_64-unknown-linux-musl which defaults to static linking —
+# no RUSTFLAGS needed. Adding -C target-feature=+crt-static explicitly breaks
+# proc-macro crates (serde_derive etc.) that must be compiled as dylibs.
+RUN cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # mosakram/ark-os is a minimal container-native OS (~2 MB).
