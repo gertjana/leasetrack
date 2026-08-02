@@ -1,0 +1,13 @@
+[package]
+name = "leasetrack-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "leasetrack"
+path = "src/main.rs"
+
+[dependencies]
+leasetrack-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
