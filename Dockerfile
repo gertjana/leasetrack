@@ -1,5 +1,7 @@
 # ─── Stage 1: Build ───────────────────────────────────────────────────────────
-FROM rust:slim-bookworm AS builder
+FROM rust:alpine AS builder
+
+RUN apk add --no-cache musl-dev
 
 WORKDIR /build
 
@@ -10,6 +12,7 @@ COPY cli/Cargo.toml  ./cli/
 COPY api/Cargo.toml  ./api/
 
 # Create dummy lib/main stubs so `cargo build` can resolve all dependencies.
+# Build scripts and proc-macros run on the host — no special flags needed here.
 RUN mkdir -p core/src cli/src api/src \
  && echo "pub fn _dummy() {}" > core/src/lib.rs \
  && echo "fn main() {}"       > cli/src/main.rs \
@@ -18,14 +21,17 @@ RUN mkdir -p core/src cli/src api/src \
  && rm -rf core/src cli/src api/src
 
 # Now copy the real source and rebuild only the application code.
+# CARGO_ENCODED_RUSTFLAGS only applies to the compiled crates, not build scripts,
+# so proc-macro crates (quote, syn, serde_derive) are unaffected.
 COPY core/src ./core/src
 COPY cli/src  ./cli/src
 COPY api/src  ./api/src
 
-RUN cargo build --release --package leasetrack-api
+RUN export CARGO_ENCODED_RUSTFLAGS="$(printf -- '-C\x1flink-arg=-no-pie')" \
+ && cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM scratch
 
 # Declare /data as a persistent volume.
 VOLUME /data
