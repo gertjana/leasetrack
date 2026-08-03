@@ -27,7 +27,7 @@ COPY core/src ./core/src
 COPY cli/src  ./cli/src
 COPY api/src  ./api/src
 
-RUN cargo build --release --package leasetrack-api
+RUN RUSTFLAGS="-C link-arg=-no-pie" cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 # scratch is an empty image (~0 MB). The binary is statically linked so no

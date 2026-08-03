@@ -1,2 +1,1 @@
-[target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "link-arg=-no-pie"]
+# empty — target-specific flags are set per cargo invocation in the Dockerfile
