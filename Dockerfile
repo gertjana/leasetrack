@@ -18,7 +18,10 @@ RUN mkdir -p core/src cli/src api/src \
  && echo "fn main() {}"       > cli/src/main.rs \
  && echo "fn main() {}"       > api/src/main.rs \
  && cargo build --release --package leasetrack-api \
- && rm -rf core/src cli/src api/src
+ && rm -rf core/src cli/src api/src \
+ && rm -f target/release/leasetrack-api \
+          target/release/deps/leasetrack_api-* \
+          target/release/deps/leasetrack_core-*
 
 # Now copy the real source and rebuild only the application code.
 # CARGO_ENCODED_RUSTFLAGS only applies to the compiled crates, not build scripts,
@@ -27,8 +30,7 @@ COPY core/src ./core/src
 COPY cli/src  ./cli/src
 COPY api/src  ./api/src
 
-RUN export CARGO_ENCODED_RUSTFLAGS="$(printf -- '-C\x1flink-arg=-no-pie')" \
- && cargo build --release --package leasetrack-api
+RUN cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM scratch
