@@ -9,6 +9,7 @@ WORKDIR /build
 
 # Cache dependency compilation separately from source changes.
 COPY Cargo.toml ./
+COPY .cargo ./.cargo
 COPY core/Cargo.toml ./core/
 COPY cli/Cargo.toml  ./cli/
 COPY api/Cargo.toml  ./api/
