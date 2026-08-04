@@ -15,8 +15,6 @@ VOLUME /data
 
 COPY --from=builder /build/target/release/leasetrack-api /leasetrack-api
 
-USER 65534:65534
-
 EXPOSE 3000
 
 ENV LEASETRACK_DATA_FILE=/data/leasetrack.json
