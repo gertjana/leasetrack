@@ -9,7 +9,7 @@ COPY . .
 RUN cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM scratch
+FROM alpine:latest
 
 VOLUME /data
 
