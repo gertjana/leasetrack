@@ -17,8 +17,6 @@ COPY --from=builder /build/target/release/leasetrack-api /leasetrack-api
 
 EXPOSE 3000
 
-HEALTHCHECK NONE
-
 ENV LEASETRACK_DATA_FILE=/data/leasetrack.json
 
 CMD ["/leasetrack-api"]
