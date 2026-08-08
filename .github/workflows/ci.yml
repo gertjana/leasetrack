@@ -64,4 +64,6 @@ jobs:
       - name: Trigger Coolify deployment
         if: github.event_name != 'pull_request'
         run: |
-          curl --request GET "${{ secrets.COOLIFY_WEBHOOK }}" --fail
+          curl --request GET "${{ secrets.COOLIFY_WEBHOOK }}" \
+            --header "Authorization: Bearer ${{ secrets.COOLIFY_WEBHOOK_SECRET }}" \
+            --fail
