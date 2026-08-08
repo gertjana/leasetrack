@@ -60,3 +60,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Trigger Coolify deployment
+        if: github.event_name != 'pull_request'
+        run: |
+          curl --request GET "${{ secrets.COOLIFY_WEBHOOK }}" --fail
