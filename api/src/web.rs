@@ -305,43 +305,75 @@ const LOGIN_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>LeaseTrack — Login</title>
   <style>
+    :root {
+      --bg:        #ffffff;
+      --bg-card:   #f6f8fa;
+      --border:    #d0d7de;
+      --border-sub:#eaeef2;
+      --text:      #1f2328;
+      --muted:     #656d76;
+      --accent:    #0969da;
+      --btn-bg:    #1a7f37;
+      --btn-hover: #2da44e;
+      --input-bg:  #ffffff;
+      --err-bg:    #fff0ee;
+      --err-fg:    #cf222e;
+      --err-border:#f85149;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:        #0d1117;
+        --bg-card:   #161b22;
+        --border:    #30363d;
+        --border-sub:#21262d;
+        --text:      #c9d1d9;
+        --muted:     #8b949e;
+        --accent:    #58a6ff;
+        --btn-bg:    #238636;
+        --btn-hover: #2ea043;
+        --input-bg:  #0d1117;
+        --err-bg:    #3d1e1e;
+        --err-fg:    #f85149;
+        --err-border:#f85149;
+      }
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Courier New', monospace;
-      background: #0d1117;
-      color: #c9d1d9;
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
     }
     .card {
-      background: #161b22;
-      border: 1px solid #30363d;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
       border-radius: 8px;
       padding: 2.5rem 2rem;
       width: 100%;
       max-width: 380px;
     }
-    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: #58a6ff; }
-    .subtitle { font-size: 0.8rem; color: #8b949e; margin-bottom: 2rem; }
-    label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: #8b949e; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--muted); }
     input[type=password] {
       width: 100%;
       padding: 0.6rem 0.75rem;
-      background: #0d1117;
-      border: 1px solid #30363d;
+      background: var(--input-bg);
+      border: 1px solid var(--border);
       border-radius: 6px;
-      color: #c9d1d9;
+      color: var(--text);
       font-family: inherit;
       font-size: 0.95rem;
       margin-bottom: 1.25rem;
     }
-    input[type=password]:focus { outline: none; border-color: #58a6ff; }
+    input[type=password]:focus { outline: none; border-color: var(--accent); }
     button {
       width: 100%;
       padding: 0.65rem;
-      background: #238636;
+      background: var(--btn-bg);
       border: none;
       border-radius: 6px;
       color: #fff;
@@ -349,12 +381,12 @@ const LOGIN_HTML: &str = r#"<!doctype html>
       font-size: 1rem;
       cursor: pointer;
     }
-    button:hover { background: #2ea043; }
+    button:hover { background: var(--btn-hover); }
     .error {
-      background: #3d1e1e;
-      border: 1px solid #f85149;
+      background: var(--err-bg);
+      border: 1px solid var(--err-border);
       border-radius: 6px;
-      color: #f85149;
+      color: var(--err-fg);
       padding: 0.6rem 0.75rem;
       font-size: 0.85rem;
       margin-bottom: 1rem;
@@ -382,111 +414,115 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>LeaseTrack — {{ car_name }}</title>
   <style>
+    :root {
+      --bg:          #ffffff;
+      --bg-panel:    #f6f8fa;
+      --bg-header:   #f6f8fa;
+      --bg-input:    #ffffff;
+      --bg-bar:      #eaeef2;
+      --bg-bar-fut:  #d0d7de;
+      --border:      #d0d7de;
+      --border-sub:  #eaeef2;
+      --text:        #1f2328;
+      --muted:       #656d76;
+      --accent:      #0969da;
+      --green:       #1a7f37;
+      --red:         #cf222e;
+      --yellow:      #9a6700;
+      --btn-bg:      #1a7f37;
+      --btn-hover:   #2da44e;
+      --err-bg:      #fff0ee;
+      --err-fg:      #cf222e;
+      --err-border:  #f85149;
+      --ok-bg:       #dafbe1;
+      --ok-fg:       #1a7f37;
+      --ok-border:   #2da44e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:          #0d1117;
+        --bg-panel:    #161b22;
+        --bg-header:   #161b22;
+        --bg-input:    #0d1117;
+        --bg-bar:      #21262d;
+        --bg-bar-fut:  #30363d;
+        --border:      #30363d;
+        --border-sub:  #21262d;
+        --text:        #c9d1d9;
+        --muted:       #8b949e;
+        --accent:      #58a6ff;
+        --green:       #3fb950;
+        --red:         #f85149;
+        --yellow:      #d29922;
+        --btn-bg:      #238636;
+        --btn-hover:   #2ea043;
+        --err-bg:      #3d1e1e;
+        --err-fg:      #f85149;
+        --err-border:  #f85149;
+        --ok-bg:       #1a2e1a;
+        --ok-fg:       #3fb950;
+        --ok-border:   #3fb950;
+      }
+    }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Courier New', monospace;
-      background: #0d1117;
-      color: #c9d1d9;
-      min-height: 100vh;
-    }
+    body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--text); min-height: 100vh; }
     header {
-      background: #161b22;
-      border-bottom: 1px solid #30363d;
+      background: var(--bg-header);
+      border-bottom: 1px solid var(--border);
       padding: 0.75rem 1.5rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      display: flex; align-items: center; justify-content: space-between;
     }
-    header h1 { font-size: 1.1rem; color: #58a6ff; }
-    header a { font-size: 0.8rem; color: #8b949e; text-decoration: none; }
-    header a:hover { color: #c9d1d9; }
+    header h1 { font-size: 1.1rem; color: var(--accent); }
+    header a { font-size: 0.8rem; color: var(--muted); text-decoration: none; }
+    header a:hover { color: var(--text); }
     main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media(max-width:720px) { main { grid-template-columns: 1fr; } }
-    .panel {
-      background: #161b22;
-      border: 1px solid #30363d;
-      border-radius: 8px;
-      padding: 1.25rem;
-    }
+    .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
     .panel h2 {
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #8b949e;
-      border-bottom: 1px solid #30363d;
-      padding-bottom: 0.5rem;
-      margin-bottom: 1rem;
+      font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--muted); border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem; margin-bottom: 1rem;
     }
-    .info-row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; border-bottom: 1px solid #21262d; }
+    .info-row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
     .info-row:last-child { border-bottom: none; }
-    .info-row span:first-child { color: #8b949e; }
-    .info-row span:last-child { color: #c9d1d9; font-weight: bold; }
-    /* Bar chart */
+    .info-row span:first-child { color: var(--muted); }
+    .info-row span:last-child { font-weight: bold; }
     .bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; font-size: 0.85rem; }
-    .bar-label { width: 3.5rem; text-align: right; color: #8b949e; flex-shrink: 0; }
-    .bar-track { flex: 1; background: #21262d; border-radius: 3px; height: 18px; position: relative; }
+    .bar-label { width: 3.5rem; text-align: right; color: var(--muted); flex-shrink: 0; }
+    .bar-track { flex: 1; background: var(--bg-bar); border-radius: 3px; height: 18px; }
     .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
-    .bar-fill.ok      { background: #238636; }
-    .bar-fill.over    { background: #f85149; }
-    .bar-fill.current { background: #d29922; }
-    .bar-fill.future  { background: #30363d; }
-    .bar-km { width: 5.5rem; text-align: right; color: #8b949e; font-size: 0.8rem; flex-shrink: 0; }
-    /* Projection */
-    .proj-row { padding: 0.5rem 0; font-size: 0.9rem; border-bottom: 1px solid #21262d; }
+    .bar-fill.ok      { background: var(--green); }
+    .bar-fill.over    { background: var(--red); }
+    .bar-fill.current { background: var(--yellow); }
+    .bar-fill.future  { background: var(--bg-bar-fut); }
+    .bar-km { width: 5.5rem; text-align: right; color: var(--muted); font-size: 0.8rem; flex-shrink: 0; }
+    .proj-row { padding: 0.5rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
     .proj-row:last-child { border-bottom: none; }
-    .proj-label { color: #8b949e; font-size: 0.8rem; margin-bottom: 0.2rem; }
+    .proj-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.2rem; }
     .proj-val { font-size: 1rem; font-weight: bold; }
-    .green { color: #3fb950; }
-    .red   { color: #f85149; }
-    /* Records */
+    .green { color: var(--green); }
+    .red   { color: var(--red); }
     .records-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-    .records-table th { color: #8b949e; font-weight: normal; text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #30363d; }
-    .records-table td { padding: 0.35rem 0.4rem; border-bottom: 1px solid #21262d; }
+    .records-table th { color: var(--muted); font-weight: normal; text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); }
+    .records-table td { padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border-sub); }
     .records-table tr:last-child td { border-bottom: none; }
-    .delta.pos { color: #3fb950; }
-    .delta.neg { color: #f85149; }
+    .delta.pos { color: var(--green); }
+    .delta.neg { color: var(--red); }
     .span-full { grid-column: 1 / -1; }
-    .error-box {
-      background: #3d1e1e;
-      border: 1px solid #f85149;
-      border-radius: 6px;
-      color: #f85149;
-      padding: 1rem;
-    }
-    .success-box {
-      background: #1a2e1a;
-      border: 1px solid #3fb950;
-      border-radius: 6px;
-      color: #3fb950;
-      padding: 0.6rem 0.75rem;
-      font-size: 0.85rem;
-      margin-bottom: 1rem;
-    }
+    .error-box { background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 6px; color: var(--err-fg); padding: 1rem; }
+    .success-box { background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 6px; color: var(--ok-fg); padding: 0.6rem 0.75rem; font-size: 0.85rem; margin-bottom: 1rem; }
     .record-form input[type=number], .record-form input[type=date] {
-      width: 100%;
-      padding: 0.55rem 0.75rem;
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      color: #c9d1d9;
-      font-family: inherit;
-      font-size: 0.9rem;
-      margin-bottom: 0.75rem;
+      width: 100%; padding: 0.55rem 0.75rem;
+      background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+      color: var(--text); font-family: inherit; font-size: 0.9rem; margin-bottom: 0.75rem;
     }
-    .record-form input:focus { outline: none; border-color: #58a6ff; }
-    .record-form label { font-size: 0.8rem; color: #8b949e; display: block; margin-bottom: 0.3rem; }
+    .record-form input:focus { outline: none; border-color: var(--accent); }
+    .record-form label { font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 0.3rem; }
     .record-form button {
-      width: 100%;
-      padding: 0.6rem;
-      background: #238636;
-      border: none;
-      border-radius: 6px;
-      color: #fff;
-      font-family: inherit;
-      font-size: 0.9rem;
-      cursor: pointer;
+      width: 100%; padding: 0.6rem; background: var(--btn-bg); border: none;
+      border-radius: 6px; color: #fff; font-family: inherit; font-size: 0.9rem; cursor: pointer;
     }
-    .record-form button:hover { background: #2ea043; }
+    .record-form button:hover { background: var(--btn-hover); }
   </style>
 </head>
 <body>
@@ -539,7 +575,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="proj-label">End of current year vs annual limit</div>
         <div class="proj-val {% if proj_year_diff > 0 %}red{% else %}green{% endif %}">
           {% if proj_year_diff > 0 %}+{% endif %}{{ proj_year_diff }} km &nbsp;
-          <small style="color:#8b949e">(proj. {{ proj_year_total|int }} km)</small>
+          <small style="color:var(--muted)">(proj. {{ proj_year_total|int }} km)</small>
         </div>
       </div>
       {% endif %}
@@ -552,7 +588,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
       {% endif %}
       {% if proj_year_diff is not defined or proj_year_diff is none %}
-      <p style="color:#8b949e;font-size:0.85rem">No projection data yet.</p>
+      <p style="color:var(--muted);font-size:0.85rem">No projection data yet.</p>
       {% endif %}
     </div>
 
