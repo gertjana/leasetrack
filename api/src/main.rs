@@ -1,3 +1,5 @@
+mod web;
+
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Json},
@@ -7,6 +9,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use tower_cookies::CookieManagerLayer;
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
     add_record, compute_report_data, compute_year_stats, load_data, save_data, LeaseConfig,
@@ -213,6 +216,16 @@ async fn main() {
         )
         .init();
 
+    let web_state = web::WebState::new();
+
+    let web_routes = Router::new()
+        .route("/", get(web::index))
+        .route("/login", get(web::login_page).post(web::login_post))
+        .route("/logout", get(web::logout))
+        .route("/dashboard", get(web::dashboard))
+        .route("/web/record", post(web::web_record))
+        .with_state(web_state);
+
     let cors = build_cors();
 
     // Protected routes require X-Api-Key when API_KEY env var is set.
@@ -227,8 +240,10 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .merge(protected)
+        .merge(web_routes)
         // Reject bodies larger than 64 KB — more than enough for lease data.
         .layer(DefaultBodyLimit::max(65_536))
+        .layer(CookieManagerLayer::new())
         .layer(cors);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());
