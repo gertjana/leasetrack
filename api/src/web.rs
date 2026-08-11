@@ -5,7 +5,7 @@ use axum::{
     Form,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use leasetrack_core::{add_record, compute_report_data, load_data, save_data};
+use leasetrack_core::{add_record, compute_report_data, load_data, save_data, LeaseConfig, LeaseData};
 use minijinja::{context, Environment};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -163,6 +163,60 @@ pub async fn web_record(
     render_dashboard(&state, jar, key, record_error, record_success).await
 }
 
+#[derive(Deserialize)]
+pub struct ConfigForm {
+    car_name: String,
+    lease_start: String,
+    lease_years: String,
+    allowed_km_per_year: String,
+    start_odometer: String,
+}
+
+/// `POST /web/config`
+pub async fn web_config(
+    State(state): State<WebState>,
+    jar: CookieJar,
+    Form(form): Form<ConfigForm>,
+) -> Response {
+    let key = match api_key_from_cookie(&jar) {
+        Some(k) if is_valid_key(&k) => k,
+        _ => return Redirect::to("/login").into_response(),
+    };
+
+    let parse_err = |msg: &str| render_dashboard(&state, jar.clone(), key.clone(), Some(msg.into()), None);
+
+    let lease_start = match chrono::NaiveDate::parse_from_str(form.lease_start.trim(), "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return parse_err("Invalid lease start date — use YYYY-MM-DD.").await,
+    };
+    let lease_years: u32 = match form.lease_years.trim().parse() {
+        Ok(n) if (1..=10).contains(&n) => n,
+        _ => return parse_err("Lease years must be between 1 and 10.").await,
+    };
+    let allowed_km_per_year: u32 = match form.allowed_km_per_year.trim().parse() {
+        Ok(n) if n > 0 => n,
+        _ => return parse_err("Allowed km/year must be greater than 0.").await,
+    };
+    let start_odometer: u32 = form.start_odometer.trim().parse().unwrap_or(0);
+    let car_name = form.car_name.trim().to_string();
+    if car_name.is_empty() || car_name.len() > 100 {
+        return parse_err("Car name must be between 1 and 100 characters.").await;
+    }
+
+    let mut data = match load_data() {
+        Ok(d) => d,
+        Err(_) => LeaseData { config: LeaseConfig { car_name: car_name.clone(), lease_start, lease_years, allowed_km_per_year, start_odometer }, records: vec![] },
+    };
+
+    data.config = LeaseConfig { car_name, lease_start, lease_years, allowed_km_per_year, start_odometer };
+
+    if let Err(e) = save_data(&data) {
+        return render_dashboard(&state, jar, key, Some(e), None).await;
+    }
+
+    render_dashboard(&state, jar, key, None, Some("Configuration saved.".into())).await
+}
+
 /// `GET /dashboard`
 pub async fn dashboard(
     State(state): State<WebState>,
@@ -271,6 +325,7 @@ async fn render_dashboard(
             lease_years => report.lease_years,
             km_allowed_per_year => report.km_allowed_per_year,
             km_allowed_total => report.km_allowed_total,
+            start_odometer => data.config.start_odometer,
             total_driven => report.total_driven as u32,
             last_odometer => last_odometer,
             last_date => last_date,
@@ -494,10 +549,37 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       color: var(--muted); border-bottom: 1px solid var(--border);
       padding-bottom: 0.5rem; margin-bottom: 1rem;
     }
-    .info-row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
+    .info-row { display: flex; justify-content: space-between; align-items: center; padding: 0.3rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
     .info-row:last-child { border-bottom: none; }
-    .info-row span:first-child { color: var(--muted); }
+    .info-row span:first-child { color: var(--muted); flex-shrink: 0; margin-right: 1rem; }
     .info-row span:last-child { font-weight: bold; }
+    .info-row input[type=text], .info-row input[type=number], .info-row input[type=date] {
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: bold;
+      padding: 0.15rem 0.4rem;
+      text-align: right;
+      width: 10rem;
+    }
+    .info-row input:focus { outline: none; border-color: var(--accent); }
+    .info-row .computed { color: var(--muted); font-size: 0.85rem; font-weight: normal; }
+    .config-save {
+      margin-top: 1rem;
+      width: 100%;
+      padding: 0.55rem;
+      background: var(--btn-bg);
+      border: none;
+      border-radius: 6px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .config-save:hover { background: var(--btn-hover); }
     .bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; font-size: 0.85rem; }
     .bar-label { width: 3.5rem; text-align: right; color: var(--muted); flex-shrink: 0; }
     .bar-track { flex: 1; background: var(--bg-bar); border-radius: 3px; height: 18px; display: flex; }
@@ -550,22 +632,57 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
   {% else %}
   <main>
 
-    <!-- Car Info -->
+    <!-- Car Info (editable) -->
     <div class="panel">
       <h2>Lease Info</h2>
-      <div class="info-row"><span>Car</span><span>{{ car_name }}</span></div>
-      <div class="info-row"><span>Period</span><span>{{ lease_start }} → {{ lease_end }}</span></div>
-      <div class="info-row"><span>Years</span><span>{{ lease_years }}</span></div>
-      <div class="info-row"><span>Allowed / year</span><span>{{ km_allowed_per_year|int }} km</span></div>
-      <div class="info-row"><span>Allowed total</span><span>{{ km_allowed_total|int }} km</span></div>
-      <div class="info-row"><span>Total driven</span><span>{{ total_driven|int }} km</span></div>
-      {% if last_odometer %}
-      <div class="info-row"><span>Last reading</span><span>{{ last_odometer|int }} km ({{ last_date }})</span></div>
-      {% endif %}
-      {% if avg_daily_rate %}
-      <div class="info-row"><span>Avg daily rate</span><span>{{ avg_daily_rate|int }} km/day</span></div>
-      {% endif %}
+      <form method="post" action="/web/config">
+        <div class="info-row">
+          <span>Car</span>
+          <input type="text" name="car_name" value="{{ car_name }}" maxlength="100" required>
+        </div>
+        <div class="info-row">
+          <span>Start date</span>
+          <input type="date" id="cfg-start" name="lease_start" value="{{ lease_start }}" required oninput="calcEnd()">
+        </div>
+        <div class="info-row">
+          <span>Years</span>
+          <input type="number" id="cfg-years" name="lease_years" value="{{ lease_years }}" min="1" max="10" required oninput="calcEnd()">
+        </div>
+        <div class="info-row">
+          <span>End date</span>
+          <span class="computed" id="cfg-end">{{ lease_end }}</span>
+        </div>
+        <div class="info-row">
+          <span>Allowed / year</span>
+          <input type="number" name="allowed_km_per_year" value="{{ km_allowed_per_year }}" min="1" required>
+        </div>
+        <div class="info-row">
+          <span>Start odometer</span>
+          <input type="number" name="start_odometer" value="{{ start_odometer }}" min="0" required>
+        </div>
+        <div class="info-row"><span>Allowed total</span><span>{{ km_allowed_total|int }} km</span></div>
+        <div class="info-row"><span>Total driven</span><span>{{ total_driven|int }} km</span></div>
+        {% if last_odometer %}
+        <div class="info-row"><span>Last reading</span><span>{{ last_odometer|int }} km ({{ last_date }})</span></div>
+        {% endif %}
+        {% if avg_daily_rate %}
+        <div class="info-row"><span>Avg daily rate</span><span>{{ avg_daily_rate|int }} km/day</span></div>
+        {% endif %}
+        <button type="submit" class="config-save">Save</button>
+      </form>
     </div>
+    <script>
+    function calcEnd() {
+      const start = document.getElementById('cfg-start').value;
+      const years = parseInt(document.getElementById('cfg-years').value, 10);
+      const el = document.getElementById('cfg-end');
+      if (start && years >= 1) {
+        const d = new Date(start);
+        d.setFullYear(d.getFullYear() + years);
+        el.textContent = d.toISOString().slice(0, 10);
+      }
+    }
+    </script>
 
     <!-- Record Form -->
     <div class="panel">

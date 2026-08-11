@@ -224,6 +224,7 @@ async fn main() {
         .route("/logout", get(web::logout))
         .route("/dashboard", get(web::dashboard))
         .route("/web/record", post(web::web_record))
+        .route("/web/config", post(web::web_config))
         .with_state(web_state);
 
     let cors = build_cors();
