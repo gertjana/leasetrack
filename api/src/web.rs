@@ -215,6 +215,7 @@ async fn render_dashboard(
 
     // Year bars: pct of allowed, capped at 125%
     let allowed = report.km_allowed_per_year as f64;
+    let proj_year_total_km = report.current_year.as_ref().map(|p| p.projected_year_total);
     let years: Vec<minijinja::Value> = report
         .years
         .iter()
@@ -230,10 +231,20 @@ async fn render_dashboard(
             } else {
                 "ok"
             };
+            // For the current year, add a projected-remainder segment
+            let proj_pct: Option<u32> = if y.is_current {
+                proj_year_total_km.map(|proj_total| {
+                    let full_pct = (proj_total / allowed * 100.0).min(125.0) as u32;
+                    full_pct.saturating_sub(pct)
+                })
+            } else {
+                None
+            };
             context! {
                 year_num => y.year_num,
                 km => km as u32,
                 pct => pct,
+                proj_pct => proj_pct,
                 status => status,
             }
         })
@@ -489,12 +500,13 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     .info-row span:last-child { font-weight: bold; }
     .bar-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; font-size: 0.85rem; }
     .bar-label { width: 3.5rem; text-align: right; color: var(--muted); flex-shrink: 0; }
-    .bar-track { flex: 1; background: var(--bg-bar); border-radius: 3px; height: 18px; }
+    .bar-track { flex: 1; background: var(--bg-bar); border-radius: 3px; height: 18px; display: flex; }
     .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
     .bar-fill.ok      { background: var(--green); }
     .bar-fill.over    { background: var(--red); }
-    .bar-fill.current { background: var(--yellow); }
+    .bar-fill.current { background: var(--yellow); border-radius: 3px 0 0 3px; }
     .bar-fill.future  { background: var(--bg-bar-fut); }
+    .bar-fill.proj    { background: var(--yellow); opacity: 0.35; border-radius: 0 3px 3px 0; }
     .bar-km { width: 5.5rem; text-align: right; color: var(--muted); font-size: 0.8rem; flex-shrink: 0; }
     .proj-row { padding: 0.5rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
     .proj-row:last-child { border-bottom: none; }
@@ -600,6 +612,9 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
         <div class="bar-label">Year {{ y.year_num }}</div>
         <div class="bar-track">
           <div class="bar-fill {{ y.status }}" style="width:{{ y.pct }}%"></div>
+          {% if y.proj_pct is defined and y.proj_pct is not none and y.proj_pct > 0 %}
+          <div class="bar-fill proj" style="width:{{ y.proj_pct }}%"></div>
+          {% endif %}
         </div>
         <div class="bar-km">
           {% if y.status != "future" %}{{ y.km }} km{% else %}—{% endif %}
