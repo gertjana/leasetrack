@@ -508,10 +508,12 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     .bar-fill.future  { background: var(--bg-bar-fut); }
     .bar-fill.proj    { background: var(--yellow); opacity: 0.35; border-radius: 0 3px 3px 0; }
     .bar-km { width: 5.5rem; text-align: right; color: var(--muted); font-size: 0.8rem; flex-shrink: 0; }
-    .proj-row { padding: 0.5rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--border-sub); }
-    .proj-row:last-child { border-bottom: none; }
-    .proj-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.2rem; }
-    .proj-val { font-size: 1rem; font-weight: bold; }
+    .proj-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media(max-width:720px) { .proj-grid { grid-template-columns: 1fr; } }
+    .proj-card { background: var(--bg); border: 1px solid var(--border-sub); border-radius: 6px; padding: 1rem; }
+    .proj-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.4rem; }
+    .proj-val { font-size: 1.5rem; font-weight: bold; margin-bottom: 0.25rem; }
+    .proj-sub { color: var(--muted); font-size: 0.78rem; }
     .green { color: var(--green); }
     .red   { color: var(--red); }
     .records-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
@@ -580,26 +582,28 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     </div>
 
     <!-- Projections -->
-    <div class="panel">
+    <div class="panel span-full">
       <h2>Projections</h2>
       {% if proj_year_diff is defined and proj_year_diff is not none %}
-      <div class="proj-row">
-        <div class="proj-label">End of current year vs annual limit</div>
-        <div class="proj-val {% if proj_year_diff > 0 %}red{% else %}green{% endif %}">
-          {% if proj_year_diff > 0 %}+{% endif %}{{ proj_year_diff }} km &nbsp;
-          <small style="color:var(--muted)">(proj. {{ proj_year_total|int }} km)</small>
+      <div class="proj-grid">
+        <div class="proj-card">
+          <div class="proj-label">End of current year vs annual limit</div>
+          <div class="proj-val {% if proj_year_diff > 0 %}red{% else %}green{% endif %}">
+            {% if proj_year_diff > 0 %}+{% endif %}{{ proj_year_diff }} km
+          </div>
+          <div class="proj-sub">projected {{ proj_year_total|int }} km / {{ km_allowed_per_year|int }} km allowed</div>
         </div>
-      </div>
-      {% endif %}
-      {% if proj_total_diff is defined and proj_total_diff is not none %}
-      <div class="proj-row">
-        <div class="proj-label">End of lease vs total allowed</div>
-        <div class="proj-val {% if proj_total_diff > 0 %}red{% else %}green{% endif %}">
-          {% if proj_total_diff > 0 %}+{% endif %}{{ proj_total_diff }} km
+        {% if proj_total_diff is defined and proj_total_diff is not none %}
+        <div class="proj-card">
+          <div class="proj-label">End of lease vs total allowed</div>
+          <div class="proj-val {% if proj_total_diff > 0 %}red{% else %}green{% endif %}">
+            {% if proj_total_diff > 0 %}+{% endif %}{{ proj_total_diff }} km
+          </div>
+          <div class="proj-sub">projected vs {{ km_allowed_total|int }} km total allowed</div>
         </div>
+        {% endif %}
       </div>
-      {% endif %}
-      {% if proj_year_diff is not defined or proj_year_diff is none %}
+      {% else %}
       <p style="color:var(--muted);font-size:0.85rem">No projection data yet.</p>
       {% endif %}
     </div>
