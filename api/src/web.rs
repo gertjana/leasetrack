@@ -567,6 +567,14 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     }
     .info-row input:focus { outline: none; border-color: var(--accent); }
     .info-row .computed { color: var(--muted); font-size: 0.85rem; font-weight: normal; }
+    .panel h2 { display: flex; align-items: center; justify-content: space-between; }
+    .edit-toggle {
+      font-size: 0.75rem; padding: 0.2rem 0.65rem;
+      background: transparent; border: 1px solid var(--accent);
+      border-radius: 4px; color: var(--accent); cursor: pointer;
+      font-family: inherit;
+    }
+    .edit-toggle:hover { background: var(--accent); color: #fff; }
     .config-save {
       margin-top: 1rem;
       width: 100%;
@@ -634,8 +642,26 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
 
     <!-- Car Info (editable) -->
     <div class="panel">
-      <h2>Lease Info</h2>
-      <form method="post" action="/web/config">
+      <h2>Lease Info <button type="button" class="edit-toggle" id="cfg-edit-btn" onclick="toggleLeaseEdit()">Edit</button></h2>
+      <!-- Read-only view -->
+      <div id="cfg-view">
+        <div class="info-row"><span>Car</span><span>{{ car_name }}</span></div>
+        <div class="info-row"><span>Start date</span><span>{{ lease_start }}</span></div>
+        <div class="info-row"><span>Years</span><span>{{ lease_years }}</span></div>
+        <div class="info-row"><span>End date</span><span>{{ lease_end }}</span></div>
+        <div class="info-row"><span>Allowed / year</span><span>{{ km_allowed_per_year|int }} km</span></div>
+        <div class="info-row"><span>Start odometer</span><span>{{ start_odometer|int }} km</span></div>
+        <div class="info-row"><span>Allowed total</span><span>{{ km_allowed_total|int }} km</span></div>
+        <div class="info-row"><span>Total driven</span><span>{{ total_driven|int }} km</span></div>
+        {% if last_odometer %}
+        <div class="info-row"><span>Last reading</span><span>{{ last_odometer|int }} km ({{ last_date }})</span></div>
+        {% endif %}
+        {% if avg_daily_rate %}
+        <div class="info-row"><span>Avg daily rate</span><span>{{ avg_daily_rate|int }} km/day</span></div>
+        {% endif %}
+      </div>
+      <!-- Edit form (hidden by default) -->
+      <form method="post" action="/web/config" id="cfg-form" style="display:none">
         <div class="info-row">
           <span>Car</span>
           <input type="text" name="car_name" value="{{ car_name }}" maxlength="100" required>
@@ -672,6 +698,15 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       </form>
     </div>
     <script>
+    function toggleLeaseEdit() {
+      const view = document.getElementById('cfg-view');
+      const form = document.getElementById('cfg-form');
+      const btn  = document.getElementById('cfg-edit-btn');
+      const editing = form.style.display !== 'none';
+      view.style.display = editing ? '' : 'none';
+      form.style.display = editing ? 'none' : '';
+      btn.textContent = editing ? 'Edit' : 'Cancel';
+    }
     function calcEnd() {
       const start = document.getElementById('cfg-start').value;
       const years = parseInt(document.getElementById('cfg-years').value, 10);
