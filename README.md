@@ -91,6 +91,22 @@ cargo run -p leasetrack-api
 
 A [Dockerfile](./Dockerfile) is included for containerised deployment.
 
+### Web dashboard
+
+The API also serves a browser-based dashboard at `/web` (login required).
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEB_PASSWORD` | *(required)* | Password for the web dashboard |
+
+The dashboard is a single-page HTML interface with:
+
+- **Lease Info** — displays all lease configuration and running totals. An **Edit** button reveals editable fields and a **Save** button; a **Cancel** button returns to the read-only view without saving.
+- **Record Odometer** — form to add a new odometer reading with a date picker.
+- **Per-year graph** — horizontal bar chart showing km driven per lease year against the allowed amount.
+- **Projections** — end-of-year and end-of-lease km estimates based on the current daily rate.
+- **Records** — table of all recorded odometer readings with per-entry deltas.
+
 ---
 
 ## tui
