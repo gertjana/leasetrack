@@ -20,9 +20,9 @@ pub struct WebState {
 impl WebState {
     pub fn new() -> Self {
         let mut env = Environment::new();
-        env.add_template_owned("login".to_string(), LOGIN_HTML.to_string())
+        env.add_template_owned("login.html".to_string(), LOGIN_HTML.to_string())
             .expect("login template");
-        env.add_template_owned("dashboard".to_string(), DASHBOARD_HTML.to_string())
+        env.add_template_owned("dashboard.html".to_string(), DASHBOARD_HTML.to_string())
             .expect("dashboard template");
         WebState {
             env: Arc::new(env),
@@ -79,7 +79,7 @@ pub async fn login_page(
     {
         return Redirect::to("/dashboard").into_response();
     }
-    render(&state, "login", context! { error => "" })
+    render(&state, "login.html", context! { error => "" })
 }
 
 #[derive(Deserialize)]
@@ -96,7 +96,7 @@ pub async fn login_post(
     if !is_valid_key(&form.api_key) {
         return render(
             &state,
-            "login",
+            "login.html",
             context! { error => "Invalid API key. Please try again." },
         );
     }
@@ -104,6 +104,7 @@ pub async fn login_post(
     let cookie = Cookie::build((COOKIE_NAME, form.api_key))
         .path("/")
         .http_only(true)
+        .secure(true)
         .build();
 
     (jar.add(cookie), Redirect::to("/dashboard")).into_response()
@@ -240,7 +241,7 @@ async fn render_dashboard(
 
     let data = match load_data() {
         Ok(d) => d,
-        Err(e) => return render(state, "dashboard", context! {
+        Err(e) => return render(state, "dashboard.html", context! {
             error => e,
             car_name => "",
             today => today,
@@ -316,7 +317,7 @@ async fn render_dashboard(
 
     render(
         state,
-        "dashboard",
+        "dashboard.html",
         context! {
             error => "",
             car_name => report.car_name,
