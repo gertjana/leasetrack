@@ -12,7 +12,7 @@ use axum::{
 use tower_cookies::CookieManagerLayer;
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
-    add_record, compute_report_data, compute_year_stats, load_data, save_data, LeaseConfig,
+    add_record, compute_report_data, compute_year_stats, find_user_by_key, load_data, save_data, LeaseConfig,
     LeaseData,
 };
 use serde::{Deserialize, Serialize};
@@ -20,21 +20,31 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 
-/// If the `API_KEY` environment variable is set, every request (except `/health`)
-/// must include an `X-Api-Key` header with the matching value.
+/// If a users file exists and has users, every request must include an
+/// `X-Api-Key` header with a key matching a registered user.
+/// Falls back to the legacy `API_KEY` env var if the users file is empty or missing.
 async fn check_api_key(req: Request<Body>, next: Next) -> Response {
-    if let Ok(expected) = std::env::var("API_KEY") {
-        let provided = req
-            .headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        // Constant-time comparison to prevent timing attacks.
-        if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
-            let body = serde_json::json!({"error": "missing or invalid X-Api-Key header"});
-            return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
-        }
+    let provided = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    // Primary: validate against users file
+    if find_user_by_key(provided).is_some() {
+        return next.run(req).await;
     }
+
+    // Fallback: legacy single API_KEY env var (no users file configured)
+    if let Ok(expected) = std::env::var("API_KEY") {
+        if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+            return next.run(req).await;
+        }
+        let body = serde_json::json!({"error": "missing or invalid X-Api-Key header"});
+        return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+    }
+
+    // No users file and no API_KEY set → open (development mode)
     next.run(req).await
 }
 
@@ -254,10 +264,14 @@ async fn main() {
         .expect("failed to bind");
 
     tracing::info!("leasetrack-api listening on {}", addr);
-    if std::env::var("API_KEY").is_ok() {
-        tracing::info!("API key authentication is enabled");
+    tracing::info!("Users file: {}", leasetrack_core::users_path().display());
+    let users = leasetrack_core::load_users().unwrap_or_default();
+    if !users.users.is_empty() {
+        tracing::info!("User authentication enabled ({} user(s))", users.users.len());
+    } else if std::env::var("API_KEY").is_ok() {
+        tracing::info!("API key authentication enabled (legacy API_KEY env var)");
     } else {
-        tracing::warn!("API key authentication is DISABLED — set API_KEY env var to enable");
+        tracing::warn!("Authentication is DISABLED — add users to the users file or set API_KEY");
     }
     axum::serve(listener, app).await.expect("server error");
 }

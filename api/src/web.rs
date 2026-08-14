@@ -5,7 +5,7 @@ use axum::{
     Form,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use leasetrack_core::{add_record, compute_report_data, load_data, save_data, LeaseConfig, LeaseData};
+use leasetrack_core::{add_record, authenticate_user, compute_report_data, find_user_by_key, load_data, save_data, LeaseConfig, LeaseData};
 use minijinja::{context, Environment};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -39,17 +39,7 @@ fn api_key_from_cookie(jar: &CookieJar) -> Option<String> {
 }
 
 fn is_valid_key(key: &str) -> bool {
-    match std::env::var("API_KEY") {
-        Ok(expected) => constant_time_eq(key.as_bytes(), expected.as_bytes()),
-        Err(_) => true, // no API_KEY set → any key (or empty) is fine
-    }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    find_user_by_key(key).is_some()
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -84,6 +74,7 @@ pub async fn login_page(
 
 #[derive(Deserialize)]
 pub struct LoginForm {
+    email: String,
     api_key: String,
 }
 
@@ -93,11 +84,11 @@ pub async fn login_post(
     jar: CookieJar,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    if !is_valid_key(&form.api_key) {
+    if authenticate_user(&form.email, &form.api_key).is_none() {
         return render(
             &state,
             "login",
-            context! { error => "Invalid API key. Please try again." },
+            context! { error => "Invalid email or API key. Please try again." },
         );
     }
 
@@ -424,7 +415,7 @@ const LOGIN_HTML: &str = r#"<!doctype html>
     h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
     .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
     label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--muted); }
-    input[type=password] {
+    input[type=text], input[type=password] {
       width: 100%;
       padding: 0.6rem 0.75rem;
       background: var(--input-bg);
@@ -435,7 +426,7 @@ const LOGIN_HTML: &str = r#"<!doctype html>
       font-size: 0.95rem;
       margin-bottom: 1.25rem;
     }
-    input[type=password]:focus { outline: none; border-color: var(--accent); }
+    input[type=text]:focus, input[type=password]:focus { outline: none; border-color: var(--accent); }
     button {
       width: 100%;
       padding: 0.65rem;
@@ -462,11 +453,13 @@ const LOGIN_HTML: &str = r#"<!doctype html>
 <body>
   <div class="card">
     <h1>LeaseTrack</h1>
-    <p class="subtitle">Enter your API key to continue</p>
+    <p class="subtitle">Sign in with your email and API key</p>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/login">
+      <label for="email">Email</label>
+      <input type="text" id="email" name="email" autofocus placeholder="you@example.com" autocomplete="email">
       <label for="api_key">API Key</label>
-      <input type="password" id="api_key" name="api_key" autofocus placeholder="••••••••••••••••">
+      <input type="password" id="api_key" name="api_key" placeholder="••••••••••••••••">
       <button type="submit">Sign in</button>
     </form>
   </div>
