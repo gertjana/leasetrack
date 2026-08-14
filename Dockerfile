@@ -19,6 +19,5 @@ EXPOSE 3000
 
 ENV LEASETRACK_DATA_FILE=/data/leasetrack.json
 ENV LEASETRACK_USERS_FILE=/data/leasetrack-users.json
-ENV PORT=3000
 
 CMD ["/leasetrack-api"]
