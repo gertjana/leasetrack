@@ -88,7 +88,7 @@ pub async fn login_post(
         return render(
             &state,
             "login.html",
-            context! { error => "Invalid API key. Please try again." },
+            context! { error => "Invalid email or API key. Please try again." },
         );
     }
 
