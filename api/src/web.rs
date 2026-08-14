@@ -15,6 +15,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct WebState {
     pub env: Arc<Environment<'static>>,
+    pub app_env: String,
 }
 
 impl WebState {
@@ -24,8 +25,10 @@ impl WebState {
             .expect("login template");
         env.add_template_owned("dashboard.html".to_string(), DASHBOARD_HTML.to_string())
             .expect("dashboard template");
+        let app_env = std::env::var("APP_ENV").unwrap_or_default();
         WebState {
             env: Arc::new(env),
+            app_env,
         }
     }
 }
@@ -69,7 +72,7 @@ pub async fn login_page(
     {
         return Redirect::to("/dashboard").into_response();
     }
-    render(&state, "login.html", context! { error => "" })
+    render(&state, "login.html", context! { error => "", app_env => state.app_env })
 }
 
 #[derive(Deserialize)]
@@ -88,7 +91,7 @@ pub async fn login_post(
         return render(
             &state,
             "login.html",
-            context! { error => "Invalid email or API key. Please try again." },
+            context! { error => "Invalid email or API key. Please try again.", app_env => state.app_env },
         );
     }
 
@@ -330,6 +333,7 @@ async fn render_dashboard(
             today => today,
             record_error => record_error.unwrap_or_default(),
             record_success => record_success.unwrap_or_default(),
+            app_env => state.app_env,
         },
     )
 }
@@ -452,6 +456,12 @@ const LOGIN_HTML: &str = r#"<!doctype html>
   </style>
 </head>
 <body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  <div style="height:1.8rem"></div>
+  {% endif %}
   <div class="card">
     <h1>LeaseTrack</h1>
     <p class="subtitle">Sign in with your email and API key</p>
@@ -624,6 +634,11 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
   </style>
 </head>
 <body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  {% endif %}
   <header>
     <h1>LeaseTrack — {{ car_name }}</h1>
     <a href="/logout">Sign out</a>
