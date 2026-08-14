@@ -18,5 +18,6 @@ COPY --from=builder /build/target/release/leasetrack-api /leasetrack-api
 EXPOSE 3000
 
 ENV LEASETRACK_DATA_FILE=/data/leasetrack.json
+ENV LEASETRACK_USERS_FILE=/data/leasetrack-users.json
 
 CMD ["/leasetrack-api"]
