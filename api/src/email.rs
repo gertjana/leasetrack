@@ -1,7 +1,4 @@
-use resend_rs::types::CreateEmailBaseOptions;
-use resend_rs::Resend;
-
-/// Send the registration email containing the generated API key.
+/// Send the registration email containing the generated API key via Resend's HTTP API.
 ///
 /// If `RESEND_API_KEY` is not set, logs the email content to stdout instead
 /// of calling the Resend API — useful for local development.
@@ -23,17 +20,28 @@ pub async fn send_registration_email(to: &str, api_key: &str) -> Result<(), Stri
 
     match std::env::var("RESEND_API_KEY") {
         Ok(resend_key) => {
-            let client = Resend::new(&resend_key);
-            let email = CreateEmailBaseOptions::new(&from, [to], subject)
-                .with_text(&body_text)
-                .with_html(&body_html);
-
-            client
-                .emails
-                .send(email)
+            let client = reqwest::Client::new();
+            let res = client
+                .post("https://api.resend.com/emails")
+                .bearer_auth(&resend_key)
+                .json(&serde_json::json!({
+                    "from": from,
+                    "to": [to],
+                    "subject": subject,
+                    "text": body_text,
+                    "html": body_html,
+                }))
+                .send()
                 .await
-                .map(|_| ())
-                .map_err(|e| format!("Failed to send email: {e}"))
+                .map_err(|e| format!("Failed to send email: {e}"))?;
+
+            if res.status().is_success() {
+                Ok(())
+            } else {
+                let status = res.status();
+                let body = res.text().await.unwrap_or_default();
+                Err(format!("Resend API error {status}: {body}"))
+            }
         }
         Err(_) => {
             // No RESEND_API_KEY — log to console for local dev
