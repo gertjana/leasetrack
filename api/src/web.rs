@@ -29,6 +29,8 @@ impl WebState {
             .expect("register template");
         env.add_template_owned("setup.html".to_string(), SETUP_HTML.to_string())
             .expect("setup template");
+        env.add_template_owned("forgot.html".to_string(), FORGOT_HTML.to_string())
+            .expect("forgot template");
         let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
         WebState {
             env: Arc::new(env),
@@ -300,6 +302,39 @@ pub async fn setup_post(
     Redirect::to("/dashboard").into_response()
 }
 
+// ─── Forgot API key ───────────────────────────────────────────────────────────
+
+/// `GET /forgot`
+pub async fn forgot_page(State(state): State<WebState>) -> Response {
+    render(&state, "forgot.html", context! { success => false, app_env => state.app_env })
+}
+
+#[derive(Deserialize)]
+pub struct ForgotForm {
+    email: String,
+}
+
+/// `POST /forgot` — generate a new API key for the email if it exists, send it.
+pub async fn forgot_post(
+    State(state): State<WebState>,
+    Form(form): Form<ForgotForm>,
+) -> Response {
+    let email = form.email.trim().to_lowercase();
+
+    let mut users = load_users().unwrap_or_default();
+    if let Some(user) = users.users.iter_mut().find(|u| u.email == email) {
+        let new_key = generate_api_key();
+        user.api_key = new_key.clone();
+        if let Err(e) = save_users(&users) {
+            tracing::error!("Failed to save users file during forgot: {e}");
+        } else if let Err(e) = crate::email::send_registration_email(&email, &new_key).await {
+            tracing::error!("Failed to send forgot email: {e}");
+        }
+    }
+    // Always show success to avoid leaking which emails are registered
+    render(&state, "forgot.html", context! { success => true, app_env => state.app_env })
+}
+
 // ─── Registration ─────────────────────────────────────────────────────────────
 
 /// `GET /register`
@@ -487,6 +522,65 @@ fn render(state: &WebState, template: &str, ctx: minijinja::Value) -> Response {
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
+
+const FORGOT_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LeaseTrack — Forgot API Key</title>
+  <style>
+    :root {
+      --bg:#ffffff; --bg-card:#f6f8fa; --border:#d0d7de; --text:#1f2328;
+      --muted:#656d76; --accent:#0969da; --btn-bg:#1a7f37; --btn-hover:#2da44e;
+      --input-bg:#ffffff; --ok-bg:#dafbe1; --ok-fg:#1a7f37; --ok-border:#2da44e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#0d1117; --bg-card:#161b22; --border:#30363d; --text:#c9d1d9;
+        --muted:#8b949e; --accent:#58a6ff; --btn-bg:#238636; --btn-hover:#2ea043;
+        --input-bg:#0d1117; --ok-bg:#1a2e1a; --ok-fg:#3fb950; --ok-border:#3fb950;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 2.5rem 2rem; width: 100%; max-width: 380px; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--muted); }
+    input[type=text] { width: 100%; padding: 0.6rem 0.75rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: inherit; font-size: 0.95rem; margin-bottom: 1.25rem; }
+    input[type=text]:focus { outline: none; border-color: var(--accent); }
+    button { width: 100%; padding: 0.65rem; background: var(--btn-bg); border: none; border-radius: 6px; color: #fff; font-family: inherit; font-size: 1rem; cursor: pointer; }
+    button:hover { background: var(--btn-hover); }
+    .success { background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 6px; color: var(--ok-fg); padding: 0.75rem; font-size: 0.9rem; margin-bottom: 1rem; }
+    .back { display: block; text-align: center; margin-top: 1rem; font-size: 0.8rem; color: var(--muted); text-decoration: none; }
+    .back:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  <div style="height:1.8rem"></div>
+  {% endif %}
+  <div class="card">
+    <h1>LeaseTrack</h1>
+    <p class="subtitle">Reset your API key</p>
+    {% if success %}
+      <div class="success">If that email is registered, a new API key is on its way.</div>
+      <a class="back" href="/login">Back to sign in</a>
+    {% else %}
+      <form method="post" action="/forgot">
+        <label for="email">Email address</label>
+        <input type="text" id="email" name="email" autofocus placeholder="you@example.com" autocomplete="email">
+        <button type="submit">Send new API key</button>
+      </form>
+      <a class="back" href="/login">Back to sign in</a>
+    {% endif %}
+  </div>
+</body>
+</html>"#;
 
 const SETUP_HTML: &str = r#"<!doctype html>
 <html lang="en">
@@ -777,6 +871,7 @@ const LOGIN_HTML: &str = r#"<!doctype html>
       <button type="submit">Sign in</button>
     </form>
     <a href="/register" style="display:block;text-align:center;margin-top:1rem;font-size:0.8rem;color:var(--muted);text-decoration:none;">No account yet? Register</a>
+    <a href="/forgot" style="display:block;text-align:center;margin-top:0.5rem;font-size:0.8rem;color:var(--muted);text-decoration:none;">Forgot your API key?</a>
   </div>
 </body>
 </html>"#;
