@@ -1,4 +1,5 @@
 use chrono::{Datelike, Duration, Local, NaiveDate};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -26,7 +27,76 @@ pub struct LeaseData {
     pub records: Vec<KmRecord>,
 }
 
+// ─── User / Auth Structures ───────────────────────────────────────────────────
+
+/// A single registered user. Each user has a unique email and their own API key.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct User {
+    pub email: String,
+    pub api_key: String,
+}
+
+/// Root structure of the users JSON file.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct UsersData {
+    pub users: Vec<User>,
+}
+
 // ─── File I/O ─────────────────────────────────────────────────────────────────
+
+/// Returns the data file path for a specific user.
+///
+/// Path: `{base_dir}/leasetrack-{sanitized_email}.json`
+///
+/// Base dir resolution (in order):
+/// 1. `LEASETRACK_DATA_DIR` env var
+/// 2. Directory containing `LEASETRACK_DATA_FILE`
+/// 3. `~/.config`
+pub fn user_data_path(email: &str) -> PathBuf {
+    let base = if let Ok(dir) = std::env::var("LEASETRACK_DATA_DIR") {
+        PathBuf::from(dir)
+    } else if let Ok(file) = std::env::var("LEASETRACK_DATA_FILE") {
+        PathBuf::from(file)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".config")
+    };
+
+    // Sanitize email: replace @ and . with _ so it's safe as a filename
+    let safe = email.replace('@', "_at_").replace('.', "_");
+    base.join(format!("leasetrack-{safe}.json"))
+}
+
+pub fn load_user_data(email: &str) -> Result<LeaseData, String> {
+    let path = user_data_path(email);
+    if !path.exists() {
+        return Err(format!(
+            "No lease data found. Configure your lease first.\nConfig file: {}",
+            path.display()
+        ));
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
+}
+
+pub fn save_user_data(email: &str, data: &LeaseData) -> Result<(), String> {
+    let path = user_data_path(email);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+    if path.exists() {
+        let backup = path.with_extension("json.backup");
+        fs::copy(&path, &backup).map_err(|e| format!("Failed to write backup: {}", e))?;
+    }
+    let content =
+        serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize: {}", e))?;
+    fs::write(&path, content).map_err(|e| format!("Failed to write config: {}", e))
+}
 
 /// Returns the data file path. Override with `LEASETRACK_DATA_FILE` env var.
 pub fn config_path() -> PathBuf {
@@ -63,6 +133,69 @@ pub fn save_data(data: &LeaseData) -> Result<(), String> {
     let content =
         serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize: {}", e))?;
     fs::write(&path, content).map_err(|e| format!("Failed to write config: {}", e))
+}
+
+/// Returns the users file path. Override with `LEASETRACK_USERS_FILE` env var.
+/// Defaults to `~/.config/leasetrack-users.json`.
+pub fn users_path() -> PathBuf {
+    if let Ok(path) = std::env::var("LEASETRACK_USERS_FILE") {
+        return PathBuf::from(path);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".config").join("leasetrack-users.json")
+}
+
+pub fn load_users() -> Result<UsersData, String> {
+    let path = users_path();
+    if !path.exists() {
+        return Ok(UsersData::default());
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read users file: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Failed to parse users file: {}", e))
+}
+
+pub fn save_users(data: &UsersData) -> Result<(), String> {
+    let path = users_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    }
+    let content =
+        serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize: {}", e))?;
+    fs::write(&path, content).map_err(|e| format!("Failed to write users file: {}", e))
+}
+
+/// Look up a user by email and validate their API key. Returns the user if valid.
+pub fn authenticate_user(email: &str, api_key: &str) -> Option<User> {
+    let users = load_users().unwrap_or_default();
+    users.users.into_iter().find(|u| {
+        u.email.eq_ignore_ascii_case(email) && constant_time_eq_str(&u.api_key, api_key)
+    })
+}
+
+/// Look up a user by api_key alone (for cookie/header-based auth after login).
+pub fn find_user_by_key(api_key: &str) -> Option<User> {
+    let users = load_users().unwrap_or_default();
+    users
+        .users
+        .into_iter()
+        .find(|u| constant_time_eq_str(&u.api_key, api_key))
+}
+
+/// Generate a cryptographically random API key (32 hex characters).
+pub fn generate_api_key() -> String {
+    let bytes: [u8; 16] = rand::thread_rng().r#gen();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn constant_time_eq_str(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

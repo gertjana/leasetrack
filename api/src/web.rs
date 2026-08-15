@@ -5,7 +5,7 @@ use axum::{
     Form,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar};
-use leasetrack_core::{add_record, compute_report_data, load_data, save_data, LeaseConfig, LeaseData};
+use leasetrack_core::{add_record, authenticate_user, compute_report_data, find_user_by_key, generate_api_key, load_user_data, save_user_data, load_users, save_users, User, LeaseConfig, LeaseData};
 use minijinja::{context, Environment};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct WebState {
     pub env: Arc<Environment<'static>>,
+    pub app_env: String,
 }
 
 impl WebState {
@@ -24,8 +25,14 @@ impl WebState {
             .expect("login template");
         env.add_template_owned("dashboard.html".to_string(), DASHBOARD_HTML.to_string())
             .expect("dashboard template");
+        env.add_template_owned("register.html".to_string(), REGISTER_HTML.to_string())
+            .expect("register template");
+        env.add_template_owned("setup.html".to_string(), SETUP_HTML.to_string())
+            .expect("setup template");
+        let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
         WebState {
             env: Arc::new(env),
+            app_env,
         }
     }
 }
@@ -33,34 +40,36 @@ impl WebState {
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
 const COOKIE_NAME: &str = "lt_api_key";
+const COOKIE_EMAIL: &str = "lt_email";
 
 fn api_key_from_cookie(jar: &CookieJar) -> Option<String> {
     jar.get(COOKIE_NAME).map(|c| c.value().to_owned())
 }
 
-fn is_valid_key(key: &str) -> bool {
-    match std::env::var("API_KEY") {
-        Ok(expected) => constant_time_eq(key.as_bytes(), expected.as_bytes()),
-        Err(_) => true, // no API_KEY set → any key (or empty) is fine
+fn email_from_cookie(jar: &CookieJar) -> Option<String> {
+    jar.get(COOKIE_EMAIL).map(|c| c.value().to_owned())
+}
+
+/// Returns (email, api_key) if both cookies are present and valid.
+fn auth_from_cookies(jar: &CookieJar) -> Option<(String, String)> {
+    let key = api_key_from_cookie(jar)?;
+    let email = email_from_cookie(jar)?;
+    if is_valid_key(&key) {
+        Some((email, key))
+    } else {
+        None
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+fn is_valid_key(key: &str) -> bool {
+    find_user_by_key(key).is_some()
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /` — redirect to dashboard if already authenticated, else login.
 pub async fn index(jar: CookieJar) -> Response {
-    if api_key_from_cookie(&jar)
-        .as_deref()
-        .map(is_valid_key)
-        .unwrap_or(false)
-    {
+    if auth_from_cookies(&jar).is_some() {
         Redirect::to("/dashboard").into_response()
     } else {
         Redirect::to("/login").into_response()
@@ -72,18 +81,15 @@ pub async fn login_page(
     State(state): State<WebState>,
     jar: CookieJar,
 ) -> Response {
-    if api_key_from_cookie(&jar)
-        .as_deref()
-        .map(is_valid_key)
-        .unwrap_or(false)
-    {
+    if auth_from_cookies(&jar).is_some() {
         return Redirect::to("/dashboard").into_response();
     }
-    render(&state, "login.html", context! { error => "" })
+    render(&state, "login.html", context! { error => "", app_env => state.app_env })
 }
 
 #[derive(Deserialize)]
 pub struct LoginForm {
+    email: String,
     api_key: String,
 }
 
@@ -93,27 +99,31 @@ pub async fn login_post(
     jar: CookieJar,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    if !is_valid_key(&form.api_key) {
+    if authenticate_user(&form.email, &form.api_key).is_none() {
         return render(
             &state,
             "login.html",
-            context! { error => "Invalid API key. Please try again." },
+            context! { error => "Invalid email or API key. Please try again.", app_env => state.app_env },
         );
     }
 
-    let cookie = Cookie::build((COOKIE_NAME, form.api_key))
+    let key_cookie = Cookie::build((COOKIE_NAME, form.api_key))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .build();
+    let email_cookie = Cookie::build((COOKIE_EMAIL, form.email))
+        .path("/")
+        .http_only(true)
         .build();
 
-    (jar.add(cookie), Redirect::to("/dashboard")).into_response()
+    (jar.add(key_cookie).add(email_cookie), Redirect::to("/dashboard")).into_response()
 }
 
 /// `GET /logout`
 pub async fn logout(jar: CookieJar) -> Response {
-    let removal = Cookie::build((COOKIE_NAME, "")).path("/").build();
-    (jar.remove(removal), Redirect::to("/login")).into_response()
+    let removal_key = Cookie::build((COOKIE_NAME, "")).path("/").build();
+    let removal_email = Cookie::build((COOKIE_EMAIL, "")).path("/").build();
+    (jar.remove(removal_key).remove(removal_email), Redirect::to("/login")).into_response()
 }
 
 #[derive(Deserialize)]
@@ -128,9 +138,9 @@ pub async fn web_record(
     jar: CookieJar,
     Form(form): Form<RecordForm>,
 ) -> Response {
-    let key = match api_key_from_cookie(&jar) {
-        Some(k) if is_valid_key(&k) => k,
-        _ => return Redirect::to("/login").into_response(),
+    let (email, key) = match auth_from_cookies(&jar) {
+        Some(pair) => pair,
+        None => return Redirect::to("/login").into_response(),
     };
 
     let odometer: Result<u32, _> = form.odometer.trim().parse();
@@ -138,15 +148,15 @@ pub async fn web_record(
 
     let (record_success, record_error) = match (odometer, date) {
         (Ok(odo), Ok(d)) => {
-            let mut data = match load_data() {
+            let mut data = match load_user_data(&email) {
                 Ok(d) => d,
                 Err(e) => {
-                    return render_dashboard(&state, jar, key, Some(e), None).await;
+                    return render_dashboard(&state, jar, email, key, Some(e), None).await;
                 }
             };
             match add_record(&mut data, odo, d) {
                 Ok(warnings) => {
-                    let _ = save_data(&data);
+                    let _ = save_user_data(&email, &data);
                     let msg = if warnings.is_empty() {
                         format!("Recorded {} km on {}", odo, d)
                     } else {
@@ -161,7 +171,7 @@ pub async fn web_record(
         (_, Err(_)) => (None, Some("Invalid date — use YYYY-MM-DD format.".into())),
     };
 
-    render_dashboard(&state, jar, key, record_error, record_success).await
+    render_dashboard(&state, jar, email, key, record_error, record_success).await
 }
 
 #[derive(Deserialize)]
@@ -179,12 +189,12 @@ pub async fn web_config(
     jar: CookieJar,
     Form(form): Form<ConfigForm>,
 ) -> Response {
-    let key = match api_key_from_cookie(&jar) {
-        Some(k) if is_valid_key(&k) => k,
-        _ => return Redirect::to("/login").into_response(),
+    let (email, key) = match auth_from_cookies(&jar) {
+        Some(pair) => pair,
+        None => return Redirect::to("/login").into_response(),
     };
 
-    let parse_err = |msg: &str| render_dashboard(&state, jar.clone(), key.clone(), Some(msg.into()), None);
+    let parse_err = |msg: &str| render_dashboard(&state, jar.clone(), email.clone(), key.clone(), Some(msg.into()), None);
 
     let lease_start = match chrono::NaiveDate::parse_from_str(form.lease_start.trim(), "%Y-%m-%d") {
         Ok(d) => d,
@@ -204,18 +214,18 @@ pub async fn web_config(
         return parse_err("Car name must be between 1 and 100 characters.").await;
     }
 
-    let mut data = match load_data() {
+    let mut data = match load_user_data(&email) {
         Ok(d) => d,
         Err(_) => LeaseData { config: LeaseConfig { car_name: car_name.clone(), lease_start, lease_years, allowed_km_per_year, start_odometer }, records: vec![] },
     };
 
     data.config = LeaseConfig { car_name, lease_start, lease_years, allowed_km_per_year, start_odometer };
 
-    if let Err(e) = save_data(&data) {
-        return render_dashboard(&state, jar, key, Some(e), None).await;
+    if let Err(e) = save_user_data(&email, &data) {
+        return render_dashboard(&state, jar, email, key, Some(e), None).await;
     }
 
-    render_dashboard(&state, jar, key, None, Some("Configuration saved.".into())).await
+    render_dashboard(&state, jar, email, key, None, Some("Configuration saved.".into())).await
 }
 
 /// `GET /dashboard`
@@ -223,31 +233,142 @@ pub async fn dashboard(
     State(state): State<WebState>,
     jar: CookieJar,
 ) -> Response {
-    let key = match api_key_from_cookie(&jar) {
-        Some(k) if is_valid_key(&k) => k,
-        _ => return Redirect::to("/login").into_response(),
+    let (email, key) = match auth_from_cookies(&jar) {
+        Some(pair) => pair,
+        None => return Redirect::to("/login").into_response(),
     };
-    render_dashboard(&state, jar, key, None, None).await
+    render_dashboard(&state, jar, email, key, None, None).await
+}
+
+// ─── Setup ────────────────────────────────────────────────────────────────────
+
+/// `GET /setup` — initial lease configuration for new users.
+pub async fn setup_page(State(state): State<WebState>, jar: CookieJar) -> Response {
+    let (email, _) = match auth_from_cookies(&jar) {
+        Some(pair) => pair,
+        None => return Redirect::to("/login").into_response(),
+    };
+    // If already set up, go straight to dashboard
+    if load_user_data(&email).is_ok() {
+        return Redirect::to("/dashboard").into_response();
+    }
+    let today = chrono::Local::now().date_naive().to_string();
+    render(&state, "setup.html", context! { error => "", today => today, app_env => state.app_env })
+}
+
+/// `POST /setup`
+pub async fn setup_post(
+    State(state): State<WebState>,
+    jar: CookieJar,
+    Form(form): Form<ConfigForm>,
+) -> Response {
+    let (email, _) = match auth_from_cookies(&jar) {
+        Some(pair) => pair,
+        None => return Redirect::to("/login").into_response(),
+    };
+
+    let today = chrono::Local::now().date_naive().to_string();
+    let err = |msg: &str| render(&state, "setup.html", context! { error => msg, today => today, app_env => state.app_env });
+
+    let lease_start = match chrono::NaiveDate::parse_from_str(form.lease_start.trim(), "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return err("Invalid lease start date — use YYYY-MM-DD."),
+    };
+    let lease_years: u32 = match form.lease_years.trim().parse() {
+        Ok(n) if (1..=10).contains(&n) => n,
+        _ => return err("Lease years must be between 1 and 10."),
+    };
+    let allowed_km_per_year: u32 = match form.allowed_km_per_year.trim().parse() {
+        Ok(n) if n > 0 => n,
+        _ => return err("Allowed km/year must be greater than 0."),
+    };
+    let start_odometer: u32 = form.start_odometer.trim().parse().unwrap_or(0);
+    let car_name = form.car_name.trim().to_string();
+    if car_name.is_empty() || car_name.len() > 100 {
+        return err("Car name must be between 1 and 100 characters.");
+    }
+
+    let data = LeaseData {
+        config: LeaseConfig { car_name, lease_start, lease_years, allowed_km_per_year, start_odometer },
+        records: vec![],
+    };
+
+    if let Err(e) = save_user_data(&email, &data) {
+        return err(&e);
+    }
+
+    Redirect::to("/dashboard").into_response()
+}
+
+// ─── Registration ─────────────────────────────────────────────────────────────
+
+/// `GET /register`
+pub async fn register_page(State(state): State<WebState>) -> Response {
+    render(&state, "register.html", context! { error => "", success => false, app_env => state.app_env })
+}
+
+#[derive(Deserialize)]
+pub struct RegisterForm {
+    email: String,
+}
+
+/// `POST /register`
+pub async fn register_post(
+    State(state): State<WebState>,
+    Form(form): Form<RegisterForm>,
+) -> Response {
+    let email = form.email.trim().to_lowercase();
+
+    // Basic email sanity check
+    if !email.contains('@') || email.len() < 3 {
+        return render(
+            &state,
+            "register.html",
+            context! { error => "Please enter a valid email address.", success => false, app_env => state.app_env },
+        );
+    }
+
+    let mut users = load_users().unwrap_or_default();
+
+    // Check for existing user — silently succeed to avoid leaking info
+    let api_key = if let Some(existing) = users.users.iter().find(|u| u.email == email) {
+        existing.api_key.clone()
+    } else {
+        let key = generate_api_key();
+        users.users.push(User { email: email.clone(), api_key: key.clone() });
+        if let Err(e) = save_users(&users) {
+            tracing::error!("Failed to save users file: {e}");
+            return render(
+                &state,
+                "register.html",
+                context! { error => "Something went wrong. Please try again.", success => false, app_env => state.app_env },
+            );
+        }
+        key
+    };
+
+    // Send email (or log to console locally)
+    if let Err(e) = crate::email::send_registration_email(&email, &api_key).await {
+        tracing::error!("Failed to send registration email: {e}");
+        // Still show success — key is saved, user can retry
+    }
+
+    render(&state, "register.html", context! { error => "", success => true, app_env => state.app_env })
 }
 
 async fn render_dashboard(
     state: &WebState,
     _jar: CookieJar,
+    email: String,
     _key: String,
     record_error: Option<String>,
     record_success: Option<String>,
 ) -> Response {
     let today = chrono::Local::now().date_naive().to_string();
 
-    let data = match load_data() {
+    let data = match load_user_data(&email) {
         Ok(d) => d,
-        Err(e) => return render(state, "dashboard.html", context! {
-            error => e,
-            car_name => "",
-            today => today,
-            record_error => "",
-            record_success => "",
-        }),
+        Err(_) => return Redirect::to("/setup").into_response(),
     };
 
     let report = compute_report_data(&data);
@@ -339,6 +460,8 @@ async fn render_dashboard(
             today => today,
             record_error => record_error.unwrap_or_default(),
             record_success => record_success.unwrap_or_default(),
+            email => email,
+            app_env => state.app_env,
         },
     )
 }
@@ -364,6 +487,181 @@ fn render(state: &WebState, template: &str, ctx: minijinja::Value) -> Response {
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
+
+const SETUP_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LeaseTrack — Setup</title>
+  <style>
+    :root {
+      --bg:#ffffff; --bg-card:#f6f8fa; --border:#d0d7de; --text:#1f2328;
+      --muted:#656d76; --accent:#0969da; --btn-bg:#1a7f37; --btn-hover:#2da44e;
+      --input-bg:#ffffff; --err-bg:#fff0ee; --err-fg:#cf222e; --err-border:#f85149;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#0d1117; --bg-card:#161b22; --border:#30363d; --text:#c9d1d9;
+        --muted:#8b949e; --accent:#58a6ff; --btn-bg:#238636; --btn-hover:#2ea043;
+        --input-bg:#0d1117; --err-bg:#3d1e1e; --err-fg:#f85149; --err-border:#f85149;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 2.5rem 2rem; width: 100%; max-width: 440px; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; margin-top: 1rem; }
+    label:first-of-type { margin-top: 0; }
+    input[type=text], input[type=number], input[type=date] {
+      width: 100%; padding: 0.6rem 0.75rem; background: var(--input-bg);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+      font-family: inherit; font-size: 0.95rem;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+    button {
+      margin-top: 1.5rem; width: 100%; padding: 0.65rem; background: var(--btn-bg);
+      border: none; border-radius: 6px; color: #fff; font-family: inherit; font-size: 1rem; cursor: pointer;
+    }
+    button:hover { background: var(--btn-hover); }
+    .error {
+      background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 6px;
+      color: var(--err-fg); padding: 0.6rem 0.75rem; font-size: 0.85rem; margin-bottom: 1.25rem;
+    }
+    .hint { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+  </style>
+</head>
+<body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  <div style="height:1.8rem"></div>
+  {% endif %}
+  <div class="card">
+    <h1>LeaseTrack</h1>
+    <p class="subtitle">Let's set up your lease</p>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="/setup">
+      <label for="car_name">Car name</label>
+      <input type="text" id="car_name" name="car_name" placeholder="e.g. Tesla Model 3" maxlength="100" required autofocus>
+
+      <label for="lease_start">Lease start date</label>
+      <input type="date" id="lease_start" name="lease_start" value="{{ today }}" required oninput="calcEnd()">
+
+      <label for="lease_years">Lease duration (years)</label>
+      <input type="number" id="lease_years" name="lease_years" value="3" min="1" max="10" required oninput="calcEnd()">
+      <p class="hint">End date: <span id="end-date">—</span></p>
+
+      <label for="allowed_km_per_year">Allowed km per year</label>
+      <input type="number" id="allowed_km_per_year" name="allowed_km_per_year" value="20000" min="1" required>
+
+      <label for="start_odometer">Start odometer (km)</label>
+      <input type="number" id="start_odometer" name="start_odometer" value="0" min="0" required>
+
+      <button type="submit">Start tracking</button>
+    </form>
+  </div>
+  <script>
+    function calcEnd() {
+      const start = document.getElementById('lease_start').value;
+      const years = parseInt(document.getElementById('lease_years').value, 10);
+      const el = document.getElementById('end-date');
+      if (start && years >= 1) {
+        const d = new Date(start);
+        d.setFullYear(d.getFullYear() + years);
+        el.textContent = d.toISOString().slice(0, 10);
+      }
+    }
+    calcEnd();
+  </script>
+</body>
+</html>"#;
+
+const REGISTER_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LeaseTrack — Register</title>
+  <style>
+    :root {
+      --bg:#ffffff; --bg-card:#f6f8fa; --border:#d0d7de; --text:#1f2328;
+      --muted:#656d76; --accent:#0969da; --btn-bg:#1a7f37; --btn-hover:#2da44e;
+      --input-bg:#ffffff; --err-bg:#fff0ee; --err-fg:#cf222e; --err-border:#f85149;
+      --ok-bg:#dafbe1; --ok-fg:#1a7f37; --ok-border:#2da44e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#0d1117; --bg-card:#161b22; --border:#30363d; --text:#c9d1d9;
+        --muted:#8b949e; --accent:#58a6ff; --btn-bg:#238636; --btn-hover:#2ea043;
+        --input-bg:#0d1117; --err-bg:#3d1e1e; --err-fg:#f85149; --err-border:#f85149;
+        --ok-bg:#1a2e1a; --ok-fg:#3fb950; --ok-border:#3fb950;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Courier New', monospace; background: var(--bg); color: var(--text);
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+      padding: 2.5rem 2rem; width: 100%; max-width: 380px;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
+    label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--muted); }
+    input[type=text] {
+      width: 100%; padding: 0.6rem 0.75rem; background: var(--input-bg);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+      font-family: inherit; font-size: 0.95rem; margin-bottom: 1.25rem;
+    }
+    input[type=text]:focus { outline: none; border-color: var(--accent); }
+    button {
+      width: 100%; padding: 0.65rem; background: var(--btn-bg); border: none;
+      border-radius: 6px; color: #fff; font-family: inherit; font-size: 1rem; cursor: pointer;
+    }
+    button:hover { background: var(--btn-hover); }
+    .error {
+      background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 6px;
+      color: var(--err-fg); padding: 0.6rem 0.75rem; font-size: 0.85rem; margin-bottom: 1rem;
+    }
+    .success {
+      background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 6px;
+      color: var(--ok-fg); padding: 0.75rem; font-size: 0.9rem; margin-bottom: 1rem;
+    }
+    .back { display: block; text-align: center; margin-top: 1rem; font-size: 0.8rem; color: var(--muted); text-decoration: none; }
+    .back:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  <div style="height:1.8rem"></div>
+  {% endif %}
+  <div class="card">
+    <h1>LeaseTrack</h1>
+    <p class="subtitle">Create your account</p>
+    {% if success %}
+      <div class="success">
+        Check your email — we've sent your API key to sign in with.
+      </div>
+      <a class="back" href="/login">Back to sign in</a>
+    {% else %}
+      {% if error %}<div class="error">{{ error }}</div>{% endif %}
+      <form method="post" action="/register">
+        <label for="email">Email address</label>
+        <input type="text" id="email" name="email" autofocus placeholder="you@example.com" autocomplete="email">
+        <button type="submit">Send me my API key</button>
+      </form>
+      <a class="back" href="/login">Already have an account? Sign in</a>
+    {% endif %}
+  </div>
+</body>
+</html>"#;
 
 const LOGIN_HTML: &str = r#"<!doctype html>
 <html lang="en">
@@ -425,7 +723,7 @@ const LOGIN_HTML: &str = r#"<!doctype html>
     h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
     .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
     label { display: block; font-size: 0.85rem; margin-bottom: 0.4rem; color: var(--muted); }
-    input[type=password] {
+    input[type=text], input[type=password] {
       width: 100%;
       padding: 0.6rem 0.75rem;
       background: var(--input-bg);
@@ -436,7 +734,7 @@ const LOGIN_HTML: &str = r#"<!doctype html>
       font-size: 0.95rem;
       margin-bottom: 1.25rem;
     }
-    input[type=password]:focus { outline: none; border-color: var(--accent); }
+    input[type=text]:focus, input[type=password]:focus { outline: none; border-color: var(--accent); }
     button {
       width: 100%;
       padding: 0.65rem;
@@ -461,15 +759,24 @@ const LOGIN_HTML: &str = r#"<!doctype html>
   </style>
 </head>
 <body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  <div style="height:1.8rem"></div>
+  {% endif %}
   <div class="card">
     <h1>LeaseTrack</h1>
-    <p class="subtitle">Enter your API key to continue</p>
+    <p class="subtitle">Sign in with your email and API key</p>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/login">
+      <label for="email">Email</label>
+      <input type="text" id="email" name="email" autofocus placeholder="you@example.com" autocomplete="email">
       <label for="api_key">API Key</label>
-      <input type="password" id="api_key" name="api_key" autofocus placeholder="••••••••••••••••">
+      <input type="password" id="api_key" name="api_key" placeholder="••••••••••••••••">
       <button type="submit">Sign in</button>
     </form>
+    <a href="/register" style="display:block;text-align:center;margin-top:1rem;font-size:0.8rem;color:var(--muted);text-decoration:none;">No account yet? Register</a>
   </div>
 </body>
 </html>"#;
@@ -631,9 +938,17 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
   </style>
 </head>
 <body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  {% endif %}
   <header>
     <h1>LeaseTrack — {{ car_name }}</h1>
-    <a href="/logout">Sign out</a>
+    <div style="display:flex;align-items:center;gap:1rem;">
+      <span style="font-size:0.8rem;color:var(--muted)">{{ email }}</span>
+      <a href="/logout" style="font-size:0.8rem;padding:0.3rem 0.75rem;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;">Sign out</a>
+    </div>
   </header>
 
   {% if error %}
