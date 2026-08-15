@@ -9,7 +9,9 @@ COPY . .
 RUN cargo build --release --package leasetrack-api
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM scratch
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates
 
 VOLUME /data
 
