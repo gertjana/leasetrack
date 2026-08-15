@@ -1,4 +1,5 @@
 mod web;
+mod email;
 
 use axum::{
     body::Body,
@@ -232,6 +233,8 @@ async fn main() {
         .route("/", get(web::index))
         .route("/login", get(web::login_page).post(web::login_post))
         .route("/logout", get(web::logout))
+        .route("/register", get(web::register_page).post(web::register_post))
+        .route("/setup", get(web::setup_page).post(web::setup_post))
         .route("/dashboard", get(web::dashboard))
         .route("/web/record", post(web::web_record))
         .route("/web/config", post(web::web_config))
