@@ -20,6 +20,7 @@ pub async fn send_registration_email(to: &str, api_key: &str) -> Result<(), Stri
 
     match std::env::var("RESEND_API_KEY") {
         Ok(resend_key) => {
+            tracing::info!("Sending email via Resend to={to} from={from}");
             let client = reqwest::Client::new();
             let res = client
                 .post("https://api.resend.com/emails")
@@ -33,14 +34,18 @@ pub async fn send_registration_email(to: &str, api_key: &str) -> Result<(), Stri
                 }))
                 .send()
                 .await
-                .map_err(|e| format!("Failed to send email: {e}"))?;
+                .map_err(|e| format!("Failed to reach Resend API: {e}"))?;
 
-            if res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+
+            if status.is_success() {
+                tracing::info!("Resend accepted email: {body}");
                 Ok(())
             } else {
-                let status = res.status();
-                let body = res.text().await.unwrap_or_default();
-                Err(format!("Resend API error {status}: {body}"))
+                let err = format!("Resend API error {status}: {body}");
+                tracing::error!("{err}");
+                Err(err)
             }
         }
         Err(_) => {
