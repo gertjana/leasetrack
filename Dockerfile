@@ -1,6 +1,6 @@
 FROM rust:alpine AS builder
 
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev cmake make perl
 
 WORKDIR /build
 
