@@ -1,21 +1,36 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     Form,
 };
-use axum_extra::extract::cookie::{Cookie, CookieJar};
-use leasetrack_core::{add_record, authenticate_user, compute_report_data, find_user_by_key, generate_api_key, load_user_data, save_user_data, load_users, save_users, User, LeaseConfig, LeaseData};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use leasetrack_core::{add_record, authenticate_user, compute_report_data, generate_api_key, generate_token, issue_reset_token, load_user_data, redeem_reset_token, save_user_data, load_users, save_users, secret_eq, User, LeaseConfig, LeaseData};
 use minijinja::{context, Environment};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // ─── State ────────────────────────────────────────────────────────────────────
+
+/// How long a signed-in session stays valid.
+const SESSION_TTL_SECS: i64 = 12 * 60 * 60;
+
+/// A server-side session. The browser only ever holds the opaque session id, so
+/// signing out (or expiry) revokes access immediately — unlike the API key,
+/// which is a long-lived credential that a cookie could otherwise leak forever.
+#[derive(Clone)]
+pub struct Session {
+    pub email: String,
+    pub csrf: String,
+    pub expires: i64,
+}
 
 #[derive(Clone)]
 pub struct WebState {
     pub env: Arc<Environment<'static>>,
     pub app_env: String,
+    sessions: Arc<Mutex<HashMap<String, Session>>>,
 }
 
 impl WebState {
@@ -31,47 +46,99 @@ impl WebState {
             .expect("setup template");
         env.add_template_owned("forgot.html".to_string(), FORGOT_HTML.to_string())
             .expect("forgot template");
+        env.add_template_owned("reset.html".to_string(), RESET_HTML.to_string())
+            .expect("reset template");
         let app_env = std::env::var("APP_ENV").unwrap_or_else(|_| "development".to_string());
         WebState {
             env: Arc::new(env),
             app_env,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
-}
 
-// ─── Cookie helpers ───────────────────────────────────────────────────────────
+    /// True when running in production, where cookies must be HTTPS-only.
+    fn is_production(&self) -> bool {
+        self.app_env == "production"
+    }
 
-const COOKIE_NAME: &str = "lt_api_key";
-const COOKIE_EMAIL: &str = "lt_email";
+    /// Create a session for `email` and return `(session_id, csrf_token)`.
+    fn create_session(&self, email: String) -> (String, String) {
+        let id = generate_token();
+        let csrf = generate_token();
+        let expires = chrono::Local::now().timestamp() + SESSION_TTL_SECS;
+        let mut sessions = self.sessions.lock().expect("session lock poisoned");
+        // Opportunistically drop anything already expired so the map cannot grow
+        // without bound in a long-running process.
+        let now = chrono::Local::now().timestamp();
+        sessions.retain(|_, s| s.expires > now);
+        sessions.insert(id.clone(), Session { email, csrf: csrf.clone(), expires });
+        (id, csrf)
+    }
 
-fn api_key_from_cookie(jar: &CookieJar) -> Option<String> {
-    jar.get(COOKIE_NAME).map(|c| c.value().to_owned())
-}
+    fn get_session(&self, id: &str) -> Option<Session> {
+        let mut sessions = self.sessions.lock().expect("session lock poisoned");
+        let session = sessions.get(id)?.clone();
+        if session.expires <= chrono::Local::now().timestamp() {
+            sessions.remove(id);
+            return None;
+        }
+        Some(session)
+    }
 
-fn email_from_cookie(jar: &CookieJar) -> Option<String> {
-    jar.get(COOKIE_EMAIL).map(|c| c.value().to_owned())
-}
+    fn destroy_session(&self, id: &str) {
+        self.sessions.lock().expect("session lock poisoned").remove(id);
+    }
 
-/// Returns (email, api_key) if both cookies are present and valid.
-fn auth_from_cookies(jar: &CookieJar) -> Option<(String, String)> {
-    let key = api_key_from_cookie(jar)?;
-    let email = email_from_cookie(jar)?;
-    if is_valid_key(&key) {
-        Some((email, key))
-    } else {
-        None
+    /// Invalidate every session belonging to `email` (used when the API key
+    /// changes, so old sessions cannot outlive a credential reset).
+    fn destroy_sessions_for(&self, email: &str) {
+        self.sessions
+            .lock()
+            .expect("session lock poisoned")
+            .retain(|_, s| !s.email.eq_ignore_ascii_case(email));
     }
 }
 
-fn is_valid_key(key: &str) -> bool {
-    find_user_by_key(key).is_some()
+// ─── Cookie / session helpers ─────────────────────────────────────────────────
+
+const COOKIE_SESSION: &str = "lt_session";
+
+/// Build a hardened cookie: HttpOnly always, SameSite=Strict to blunt CSRF, and
+/// Secure whenever we are running in production over HTTPS.
+fn build_cookie(state: &WebState, name: &'static str, value: String) -> Cookie<'static> {
+    Cookie::build((name, value))
+        .path("/")
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .secure(state.is_production())
+        .build()
+}
+
+/// Resolve the current session from the request cookies.
+///
+/// The caller's identity comes from the server-side session only. Nothing the
+/// browser sends other than the opaque session id influences which account is
+/// loaded, which is what prevents one user from acting as another.
+fn current_session(state: &WebState, jar: &CookieJar) -> Option<Session> {
+    let id = jar.get(COOKIE_SESSION)?.value().to_owned();
+    state.get_session(&id)
+}
+
+/// Reject a POST whose CSRF token does not match the session's.
+fn csrf_ok(session: &Session, submitted: &str) -> bool {
+    secret_eq(&session.csrf, submitted)
+}
+
+fn csrf_rejected() -> Response {
+    (StatusCode::FORBIDDEN, "Invalid or missing CSRF token. Please reload the page and try again.")
+        .into_response()
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /` — redirect to dashboard if already authenticated, else login.
-pub async fn index(jar: CookieJar) -> Response {
-    if auth_from_cookies(&jar).is_some() {
+pub async fn index(State(state): State<WebState>, jar: CookieJar) -> Response {
+    if current_session(&state, &jar).is_some() {
         Redirect::to("/dashboard").into_response()
     } else {
         Redirect::to("/login").into_response()
@@ -83,7 +150,7 @@ pub async fn login_page(
     State(state): State<WebState>,
     jar: CookieJar,
 ) -> Response {
-    if auth_from_cookies(&jar).is_some() {
+    if current_session(&state, &jar).is_some() {
         return Redirect::to("/dashboard").into_response();
     }
     render(&state, "login.html", context! { error => "", app_env => state.app_env })
@@ -101,37 +168,40 @@ pub async fn login_post(
     jar: CookieJar,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    if authenticate_user(&form.email, &form.api_key).is_none() {
-        return render(
-            &state,
-            "login.html",
-            context! { error => "Invalid email or API key. Please try again.", app_env => state.app_env },
-        );
-    }
+    let user = match authenticate_user(form.email.trim(), &form.api_key) {
+        Some(user) => user,
+        None => {
+            return render(
+                &state,
+                "login.html",
+                context! { error => "Invalid email or API key. Please try again.", app_env => state.app_env },
+            )
+        }
+    };
 
-    let key_cookie = Cookie::build((COOKIE_NAME, form.api_key))
-        .path("/")
-        .http_only(true)
-        .build();
-    let email_cookie = Cookie::build((COOKIE_EMAIL, form.email))
-        .path("/")
-        .http_only(true)
-        .build();
+    // Identity comes from the stored user record, never from what was typed.
+    let (session_id, _csrf) = state.create_session(user.email);
+    let cookie = build_cookie(&state, COOKIE_SESSION, session_id);
 
-    (jar.add(key_cookie).add(email_cookie), Redirect::to("/dashboard")).into_response()
+    (jar.add(cookie), Redirect::to("/dashboard")).into_response()
 }
 
-/// `GET /logout`
-pub async fn logout(jar: CookieJar) -> Response {
-    let removal_key = Cookie::build((COOKIE_NAME, "")).path("/").build();
-    let removal_email = Cookie::build((COOKIE_EMAIL, "")).path("/").build();
-    (jar.remove(removal_key).remove(removal_email), Redirect::to("/login")).into_response()
+/// `GET /logout` — destroys the session server-side, so the credential is
+/// genuinely revoked rather than just dropped by the browser.
+pub async fn logout(State(state): State<WebState>, jar: CookieJar) -> Response {
+    if let Some(cookie) = jar.get(COOKIE_SESSION) {
+        state.destroy_session(cookie.value());
+    }
+    let removal = Cookie::build((COOKIE_SESSION, "")).path("/").build();
+    (jar.remove(removal), Redirect::to("/login")).into_response()
 }
 
 #[derive(Deserialize)]
 pub struct RecordForm {
     odometer: String,
     date: String,
+    #[serde(default)]
+    csrf_token: String,
 }
 
 /// `POST /web/record`
@@ -140,10 +210,14 @@ pub async fn web_record(
     jar: CookieJar,
     Form(form): Form<RecordForm>,
 ) -> Response {
-    let (email, key) = match auth_from_cookies(&jar) {
-        Some(pair) => pair,
+    let session = match current_session(&state, &jar) {
+        Some(s) => s,
         None => return Redirect::to("/login").into_response(),
     };
+    if !csrf_ok(&session, &form.csrf_token) {
+        return csrf_rejected();
+    }
+    let email = session.email.clone();
 
     let odometer: Result<u32, _> = form.odometer.trim().parse();
     let date = chrono::NaiveDate::parse_from_str(form.date.trim(), "%Y-%m-%d");
@@ -153,7 +227,7 @@ pub async fn web_record(
             let mut data = match load_user_data(&email) {
                 Ok(d) => d,
                 Err(e) => {
-                    return render_dashboard(&state, jar, email, key, Some(e), None).await;
+                    return render_dashboard(&state, &session, Some(e), None).await;
                 }
             };
             match add_record(&mut data, odo, d) {
@@ -173,7 +247,7 @@ pub async fn web_record(
         (_, Err(_)) => (None, Some("Invalid date — use YYYY-MM-DD format.".into())),
     };
 
-    render_dashboard(&state, jar, email, key, record_error, record_success).await
+    render_dashboard(&state, &session, record_error, record_success).await
 }
 
 #[derive(Deserialize)]
@@ -183,6 +257,8 @@ pub struct ConfigForm {
     lease_years: String,
     allowed_km_per_year: String,
     start_odometer: String,
+    #[serde(default)]
+    csrf_token: String,
 }
 
 /// `POST /web/config`
@@ -191,12 +267,16 @@ pub async fn web_config(
     jar: CookieJar,
     Form(form): Form<ConfigForm>,
 ) -> Response {
-    let (email, key) = match auth_from_cookies(&jar) {
-        Some(pair) => pair,
+    let session = match current_session(&state, &jar) {
+        Some(s) => s,
         None => return Redirect::to("/login").into_response(),
     };
+    if !csrf_ok(&session, &form.csrf_token) {
+        return csrf_rejected();
+    }
+    let email = session.email.clone();
 
-    let parse_err = |msg: &str| render_dashboard(&state, jar.clone(), email.clone(), key.clone(), Some(msg.into()), None);
+    let parse_err = |msg: &str| render_dashboard(&state, &session, Some(msg.into()), None);
 
     let lease_start = match chrono::NaiveDate::parse_from_str(form.lease_start.trim(), "%Y-%m-%d") {
         Ok(d) => d,
@@ -224,10 +304,10 @@ pub async fn web_config(
     data.config = LeaseConfig { car_name, lease_start, lease_years, allowed_km_per_year, start_odometer };
 
     if let Err(e) = save_user_data(&email, &data) {
-        return render_dashboard(&state, jar, email, key, Some(e), None).await;
+        return render_dashboard(&state, &session, Some(e), None).await;
     }
 
-    render_dashboard(&state, jar, email, key, None, Some("Configuration saved.".into())).await
+    render_dashboard(&state, &session, None, Some("Configuration saved.".into())).await
 }
 
 /// `GET /dashboard`
@@ -235,27 +315,27 @@ pub async fn dashboard(
     State(state): State<WebState>,
     jar: CookieJar,
 ) -> Response {
-    let (email, key) = match auth_from_cookies(&jar) {
-        Some(pair) => pair,
+    let session = match current_session(&state, &jar) {
+        Some(s) => s,
         None => return Redirect::to("/login").into_response(),
     };
-    render_dashboard(&state, jar, email, key, None, None).await
+    render_dashboard(&state, &session, None, None).await
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
 /// `GET /setup` — initial lease configuration for new users.
 pub async fn setup_page(State(state): State<WebState>, jar: CookieJar) -> Response {
-    let (email, _) = match auth_from_cookies(&jar) {
-        Some(pair) => pair,
+    let session = match current_session(&state, &jar) {
+        Some(s) => s,
         None => return Redirect::to("/login").into_response(),
     };
     // If already set up, go straight to dashboard
-    if load_user_data(&email).is_ok() {
+    if load_user_data(&session.email).is_ok() {
         return Redirect::to("/dashboard").into_response();
     }
     let today = chrono::Local::now().date_naive().to_string();
-    render(&state, "setup.html", context! { error => "", today => today, app_env => state.app_env })
+    render(&state, "setup.html", context! { error => "", today => today, csrf_token => session.csrf, app_env => state.app_env })
 }
 
 /// `POST /setup`
@@ -264,13 +344,17 @@ pub async fn setup_post(
     jar: CookieJar,
     Form(form): Form<ConfigForm>,
 ) -> Response {
-    let (email, _) = match auth_from_cookies(&jar) {
-        Some(pair) => pair,
+    let session = match current_session(&state, &jar) {
+        Some(s) => s,
         None => return Redirect::to("/login").into_response(),
     };
+    if !csrf_ok(&session, &form.csrf_token) {
+        return csrf_rejected();
+    }
+    let email = session.email.clone();
 
     let today = chrono::Local::now().date_naive().to_string();
-    let err = |msg: &str| render(&state, "setup.html", context! { error => msg, today => today, app_env => state.app_env });
+    let err = |msg: &str| render(&state, "setup.html", context! { error => msg, today => today, csrf_token => session.csrf, app_env => state.app_env });
 
     let lease_start = match chrono::NaiveDate::parse_from_str(form.lease_start.trim(), "%Y-%m-%d") {
         Ok(d) => d,
@@ -314,25 +398,71 @@ pub struct ForgotForm {
     email: String,
 }
 
-/// `POST /forgot` — generate a new API key for the email if it exists, send it.
+/// `POST /forgot` — email a single-use reset link if the address is registered.
+///
+/// The existing API key is left intact. Only following the emailed link rotates
+/// it, so an unauthenticated request cannot lock a user out of their account.
 pub async fn forgot_post(
     State(state): State<WebState>,
     Form(form): Form<ForgotForm>,
 ) -> Response {
     let email = form.email.trim().to_lowercase();
 
-    let mut users = load_users().unwrap_or_default();
-    if let Some(user) = users.users.iter_mut().find(|u| u.email == email) {
-        let new_key = generate_api_key();
-        user.api_key = new_key.clone();
-        if let Err(e) = save_users(&users) {
-            tracing::error!("Failed to save users file during forgot: {e}");
-        } else if let Err(e) = crate::email::send_registration_email(&email, &new_key).await {
-            tracing::error!("Failed to send forgot email: {e}");
+    match issue_reset_token(&email) {
+        Ok(Some(token)) => {
+            let link = format!("{}/reset?token={}", base_url(), token);
+            if let Err(e) = crate::email::send_reset_email(&email, &link).await {
+                tracing::error!("Failed to send reset email: {e}");
+            }
         }
+        Ok(None) => {
+            // No such user. Fall through to the same response so the page does
+            // not reveal which addresses are registered.
+        }
+        Err(e) => tracing::error!("Failed to issue reset token: {e}"),
     }
-    // Always show success to avoid leaking which emails are registered
+
     render(&state, "forgot.html", context! { success => true, app_env => state.app_env })
+}
+
+#[derive(Deserialize)]
+pub struct ResetQuery {
+    #[serde(default)]
+    token: String,
+}
+
+/// `GET /reset?token=…` — redeem a reset link and show the new API key once.
+pub async fn reset_page(
+    State(state): State<WebState>,
+    Query(query): Query<ResetQuery>,
+) -> Response {
+    match redeem_reset_token(&query.token) {
+        Ok((email, new_key)) => {
+            // The old key is gone, so any session resting on it must go too.
+            state.destroy_sessions_for(&email);
+            if let Err(e) = crate::email::send_registration_email(&email, &new_key).await {
+                tracing::error!("Failed to send new key email: {e}");
+            }
+            render(
+                &state,
+                "reset.html",
+                context! { error => "", api_key => new_key, app_env => state.app_env },
+            )
+        }
+        Err(e) => render(
+            &state,
+            "reset.html",
+            context! { error => e, api_key => "", app_env => state.app_env },
+        ),
+    }
+}
+
+/// Public base URL used to build links in outgoing email.
+fn base_url() -> String {
+    std::env::var("APP_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string())
+        .trim_end_matches('/')
+        .to_string()
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -370,7 +500,7 @@ pub async fn register_post(
         existing.api_key.clone()
     } else {
         let key = generate_api_key();
-        users.users.push(User { email: email.clone(), api_key: key.clone() });
+        users.users.push(User::new(email.clone(), key.clone()));
         if let Err(e) = save_users(&users) {
             tracing::error!("Failed to save users file: {e}");
             return render(
@@ -393,12 +523,11 @@ pub async fn register_post(
 
 async fn render_dashboard(
     state: &WebState,
-    _jar: CookieJar,
-    email: String,
-    _key: String,
+    session: &Session,
     record_error: Option<String>,
     record_success: Option<String>,
 ) -> Response {
+    let email = session.email.clone();
     let today = chrono::Local::now().date_naive().to_string();
 
     let data = match load_user_data(&email) {
@@ -496,6 +625,7 @@ async fn render_dashboard(
             record_error => record_error.unwrap_or_default(),
             record_success => record_success.unwrap_or_default(),
             email => email,
+            csrf_token => session.csrf,
             app_env => state.app_env,
         },
     )
@@ -522,6 +652,64 @@ fn render(state: &WebState, template: &str, ctx: minijinja::Value) -> Response {
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
+
+const RESET_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>LeaseTrack — Reset API Key</title>
+  <style>
+    :root {
+      --bg:#ffffff; --bg-card:#f6f8fa; --border:#d0d7de; --text:#1f2328;
+      --muted:#656d76; --accent:#0969da; --btn-bg:#1a7f37; --btn-hover:#2da44e;
+      --input-bg:#ffffff; --ok-bg:#dafbe1; --ok-fg:#1a7f37; --ok-border:#2da44e;
+      --err-bg:#ffebe9; --err-fg:#cf222e; --err-border:#cf222e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:#0d1117; --bg-card:#161b22; --border:#30363d; --text:#c9d1d9;
+        --muted:#8b949e; --accent:#58a6ff; --btn-bg:#238636; --btn-hover:#2ea043;
+        --input-bg:#0d1117; --ok-bg:#1a2e1a; --ok-fg:#3fb950; --ok-border:#3fb950;
+        --err-bg:#2d1214; --err-fg:#f85149; --err-border:#f85149;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 2.5rem 2rem; width: 100%; max-width: 420px; }
+    h1 { font-size: 1.4rem; margin-bottom: 0.25rem; color: var(--accent); }
+    .subtitle { font-size: 0.8rem; color: var(--muted); margin-bottom: 2rem; }
+    .success { background: var(--ok-bg); border: 1px solid var(--ok-border); border-radius: 6px; color: var(--ok-fg); padding: 0.75rem; font-size: 0.9rem; margin-bottom: 1rem; }
+    .error { background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 6px; color: var(--err-fg); padding: 0.75rem; font-size: 0.9rem; margin-bottom: 1rem; }
+    .key { display: block; background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 1rem; font-size: 1.05rem; word-break: break-all; margin-bottom: 1rem; }
+    .hint { font-size: 0.8rem; color: var(--muted); margin-bottom: 1rem; }
+    .back { display: block; text-align: center; margin-top: 1rem; font-size: 0.8rem; color: var(--muted); text-decoration: none; }
+    .back:hover { color: var(--text); }
+  </style>
+</head>
+<body>
+  {% if app_env and app_env != "production" %}
+  <div style="background:#9a6700;color:#fff;text-align:center;padding:0.4rem;font-size:0.8rem;font-family:'Courier New',monospace;letter-spacing:0.05em;position:fixed;top:0;width:100%;">
+    ⚠ PREVIEW — {{ app_env }}
+  </div>
+  {% endif %}
+  <div class="card">
+    <h1>LeaseTrack</h1>
+    <p class="subtitle">Reset your API key</p>
+    {% if error %}
+      <div class="error">{{ error }}</div>
+      <p class="hint">Reset links can only be used once and expire after 30 minutes.</p>
+      <a class="back" href="/forgot">Request a new link</a>
+    {% else %}
+      <div class="success">Your API key has been reset.</div>
+      <code class="key">{{ api_key }}</code>
+      <p class="hint">Copy it now — this is the only time it is shown. A copy has also been emailed to you. Your previous key no longer works.</p>
+      <a class="back" href="/login">Go to sign in</a>
+    {% endif %}
+  </div>
+</body>
+</html>"#;
 
 const FORGOT_HTML: &str = r#"<!doctype html>
 <html lang="en">
@@ -568,13 +756,13 @@ const FORGOT_HTML: &str = r#"<!doctype html>
     <h1>LeaseTrack</h1>
     <p class="subtitle">Reset your API key</p>
     {% if success %}
-      <div class="success">If that email is registered, a new API key is on its way.</div>
+      <div class="success">If that email is registered, a reset link is on its way. The link expires in 30 minutes.</div>
       <a class="back" href="/login">Back to sign in</a>
     {% else %}
       <form method="post" action="/forgot">
         <label for="email">Email address</label>
         <input type="text" id="email" name="email" autofocus placeholder="you@example.com" autocomplete="email">
-        <button type="submit">Send new API key</button>
+        <button type="submit">Send reset link</button>
       </form>
       <a class="back" href="/login">Back to sign in</a>
     {% endif %}
@@ -638,6 +826,7 @@ const SETUP_HTML: &str = r#"<!doctype html>
     <p class="subtitle">Let's set up your lease</p>
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
     <form method="post" action="/setup">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label for="car_name">Car name</label>
       <input type="text" id="car_name" name="car_name" placeholder="e.g. Tesla Model 3" maxlength="100" required autofocus>
 
@@ -1076,6 +1265,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       </div>
       <!-- Edit form (hidden by default) -->
       <form method="post" action="/web/config" id="cfg-form" style="display:none">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="info-row">
           <span>Car</span>
           <input type="text" name="car_name" value="{{ car_name }}" maxlength="100" required>
@@ -1139,6 +1329,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
       {% if record_success %}<div class="success-box">{{ record_success }}</div>{% endif %}
       {% if record_error %}<div class="error-box" style="margin-bottom:1rem">{{ record_error }}</div>{% endif %}
       <form method="post" action="/web/record" class="record-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label for="odometer">Odometer (km)</label>
         <input type="number" id="odometer" name="odometer" min="0" placeholder="e.g. 25000" required>
         <label for="date">Date</label>
