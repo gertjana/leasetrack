@@ -495,22 +495,33 @@ pub async fn register_post(
 
     let mut users = load_users().unwrap_or_default();
 
-    // Check for existing user — silently succeed to avoid leaking info
-    let api_key = if let Some(existing) = users.users.iter().find(|u| u.email == email) {
-        existing.api_key.clone()
-    } else {
-        let key = generate_api_key();
-        users.users.push(User::new(email.clone(), key.clone()));
-        if let Err(e) = save_users(&users) {
-            tracing::error!("Failed to save users file: {e}");
-            return render(
-                &state,
-                "register.html",
-                context! { error => "Something went wrong. Please try again.", success => false, app_env => state.app_env },
-            );
+    // Already registered? We can no longer resend the key — only its hash is
+    // stored — so send a reset link instead. The response is identical either
+    // way, so the page still does not reveal which addresses are registered.
+    if users.users.iter().any(|u| u.email == email) {
+        match issue_reset_token(&email) {
+            Ok(Some(token)) => {
+                let link = format!("{}/reset?token={}", base_url(), token);
+                if let Err(e) = crate::email::send_reset_email(&email, &link).await {
+                    tracing::error!("Failed to send reset email for existing account: {e}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!("Failed to issue reset token: {e}"),
         }
-        key
-    };
+        return render(&state, "register.html", context! { error => "", success => true, app_env => state.app_env });
+    }
+
+    let api_key = generate_api_key();
+    users.users.push(User::new(email.clone(), api_key.clone()));
+    if let Err(e) = save_users(&users) {
+        tracing::error!("Failed to save users file: {e}");
+        return render(
+            &state,
+            "register.html",
+            context! { error => "Something went wrong. Please try again.", success => false, app_env => state.app_env },
+        );
+    }
 
     // Send email (or log to console locally)
     if let Err(e) = crate::email::send_registration_email(&email, &api_key).await {
