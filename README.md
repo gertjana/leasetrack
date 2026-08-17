@@ -60,7 +60,59 @@ cargo run -p leasetrack-cli -- --help
 ## api
 
 An HTTP REST API server built with [Axum](https://github.com/tokio-rs/axum).
-Reads and writes the same local data file as the CLI via `leasetrack-core`.
+Shares `leasetrack-core` with the CLI.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Port to listen on |
+| `API_KEY` | *(unset)* | Legacy single-user key. Only consulted when no users are registered |
+| `CORS_ORIGINS` | *(unset)* | `*` for permissive, comma-separated origins, or unset to deny |
+| `APP_ENV` | `development` | Set to `production` to mark session cookies `Secure` (HTTPS only) |
+| `TRUST_PROXY` | *(unset)* | Set to `1` when behind a reverse proxy, so rate limits key off `X-Forwarded-For` rather than the proxy's own address |
+| `APP_BASE_URL` | `http://localhost:3000` | Public URL used to build links in outgoing email |
+| `LEASETRACK_DATA_DIR` | `~/.config` | Directory holding the per-user data files |
+| `LEASETRACK_DATA_FILE` | `~/.config/leasetrack.json` | Shared data file (CLI, and the API in legacy mode) |
+| `LEASETRACK_USERS_FILE` | `~/.config/leasetrack-users.json` | Registered users and their API keys |
+
+### Authentication and data isolation
+
+Each registered user gets their own data file, `leasetrack-<email>.json`, in
+`LEASETRACK_DATA_DIR`. The JSON API and the web dashboard read and write that
+same per-user file, so the two views always agree.
+
+Authenticate with the key that was emailed at registration:
+
+```bash
+curl -H "X-Api-Key: <your key>" http://localhost:3000/list
+```
+
+Once any user is registered, a valid key is required — requests without one get
+`401`. If no users exist the server falls back to the legacy single-tenant
+modes: `API_KEY` if it is set, otherwise fully open for local development. Both
+fall back to the shared `LEASETRACK_DATA_FILE`. `/health` is always public.
+
+### Rate limiting
+
+The unauthenticated endpoints are capped in memory, per instance:
+
+| Endpoint | Limit |
+|---|---|
+| `POST /login` | 10 per 15 min, per client IP |
+| `POST /register`, `POST /forgot` | 5 per hour, per client IP |
+| any mail to one address | 5 per hour, per email address |
+
+The per-address cap is what stops a distributed flood of one person's inbox,
+which an IP limit alone cannot. Exceeding a limit returns `429` with a
+`Retry-After` header; `/forgot` and `/register` still render their normal
+success page so the cap cannot be used to probe which addresses are registered.
+
+**Behind a proxy, set `TRUST_PROXY=1`.** Otherwise every request appears to
+come from the proxy and all clients share a single bucket — one abusive client
+would lock out everyone. It is off by default because trusting
+`X-Forwarded-For` on a directly reachable server would let anyone bypass the
+limits with a forged header.
 
 ### Build & run
 
@@ -69,16 +121,9 @@ cargo build -p leasetrack-api
 cargo run -p leasetrack-api
 ```
 
-### Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `PORT` | `3000` | Port to listen on |
-| `API_KEY` | *(unset)* | If set, all endpoints (except `/health`) require `X-Api-Key: <value>` |
-| `CORS_ORIGINS` | *(unset)* | `*` for permissive, comma-separated origins, or unset to deny |
-| `LEASETRACK_DATA_FILE` | `~/.config/leasetrack.json` | Override data file path |
-
 ### Endpoints
+
+All endpoints except `/health` act on the authenticated user's own data.
 
 | Method | Path | Description |
 |---|---|---|

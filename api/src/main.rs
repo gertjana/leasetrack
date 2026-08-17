@@ -1,9 +1,10 @@
 mod web;
 mod email;
+mod ratelimit;
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Json},
+    extract::{DefaultBodyLimit, Extension, Json},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -13,32 +14,72 @@ use axum::{
 use tower_cookies::CookieManagerLayer;
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
-    add_record, compute_report_data, compute_year_stats, find_user_by_key, load_data, save_data, LeaseConfig,
-    LeaseData,
+    add_record, compute_report_data, compute_year_stats, find_user_by_key, load_data,
+    load_user_data, load_users, save_data, save_user_data, LeaseConfig, LeaseData,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 
+/// Who a JSON API request is acting as.
+///
+/// Requests authenticated with a registered user's key act on that user's own
+/// data file, mirroring the web UI. The legacy single-tenant modes (the
+/// `API_KEY` env var, or an unconfigured development instance) have no user
+/// attached and keep operating on the shared data file.
+#[derive(Clone, Debug)]
+enum Identity {
+    User(String),
+    Legacy,
+}
+
+impl Identity {
+    fn load(&self) -> Result<LeaseData, String> {
+        match self {
+            Identity::User(email) => load_user_data(email),
+            Identity::Legacy => load_data(),
+        }
+    }
+
+    fn save(&self, data: &LeaseData) -> Result<(), String> {
+        match self {
+            Identity::User(email) => save_user_data(email, data),
+            Identity::Legacy => save_data(data),
+        }
+    }
+}
+
 /// If a users file exists and has users, every request must include an
 /// `X-Api-Key` header with a key matching a registered user.
 /// Falls back to the legacy `API_KEY` env var if the users file is empty or missing.
-async fn check_api_key(req: Request<Body>, next: Next) -> Response {
+async fn check_api_key(mut req: Request<Body>, next: Next) -> Response {
     let provided = req
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    // Primary: validate against users file
-    if find_user_by_key(provided).is_some() {
+    // Primary: validate against users file. The matched user's own data file is
+    // what the handler will read and write.
+    if let Some(user) = find_user_by_key(provided) {
+        req.extensions_mut().insert(Identity::User(user.email));
         return next.run(req).await;
+    }
+
+    // Once any user is registered, a valid key is mandatory. Without this the
+    // request would fall through to the open development path below and get
+    // access to the shared data file.
+    let users_exist = load_users().map(|u| !u.users.is_empty()).unwrap_or(false);
+    if users_exist {
+        let body = serde_json::json!({"error": "missing or invalid X-Api-Key header"});
+        return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
     }
 
     // Fallback: legacy single API_KEY env var (no users file configured)
     if let Ok(expected) = std::env::var("API_KEY") {
         if constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
+            req.extensions_mut().insert(Identity::Legacy);
             return next.run(req).await;
         }
         let body = serde_json::json!({"error": "missing or invalid X-Api-Key header"});
@@ -46,6 +87,7 @@ async fn check_api_key(req: Request<Body>, next: Next) -> Response {
     }
 
     // No users file and no API_KEY set → open (development mode)
+    req.extensions_mut().insert(Identity::Legacy);
     next.run(req).await
 }
 
@@ -116,7 +158,10 @@ async fn health() -> impl IntoResponse {
 ///   "start_odometer": 0
 /// }
 /// ```
-async fn init(Json(req): Json<InitRequest>) -> Result<impl IntoResponse, AppError> {
+async fn init(
+    Extension(identity): Extension<Identity>,
+    Json(req): Json<InitRequest>,
+) -> Result<impl IntoResponse, AppError> {
     if req.car_name.trim().is_empty() {
         return Err(AppError("car_name cannot be empty".into()));
     }
@@ -141,7 +186,7 @@ async fn init(Json(req): Json<InitRequest>) -> Result<impl IntoResponse, AppErro
         records: Vec::new(),
     };
 
-    save_data(&data).map_err(AppError::from)?;
+    identity.save(&data).map_err(AppError::from)?;
 
     Ok(Json(serde_json::json!({
         "message": format!("Lease car '{}' configured.", req.car_name),
@@ -156,12 +201,15 @@ async fn init(Json(req): Json<InitRequest>) -> Result<impl IntoResponse, AppErro
 /// { "odometer": 25000, "date": "2025-06-15" }
 /// ```
 /// `date` is optional and defaults to today.
-async fn record(Json(req): Json<RecordRequest>) -> Result<impl IntoResponse, AppError> {
-    let mut data = load_data().map_err(AppError::from)?;
+async fn record(
+    Extension(identity): Extension<Identity>,
+    Json(req): Json<RecordRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut data = identity.load().map_err(AppError::from)?;
 
     let date = req.date.unwrap_or_else(|| Local::now().date_naive());
     let warnings = add_record(&mut data, req.odometer, date).map_err(AppError::from)?;
-    save_data(&data).map_err(AppError::from)?;
+    identity.save(&data).map_err(AppError::from)?;
 
     Ok(Json(RecordResponse {
         message: format!(
@@ -174,15 +222,15 @@ async fn record(Json(req): Json<RecordRequest>) -> Result<impl IntoResponse, App
 }
 
 /// `GET /report` — full report with projections (JSON).
-async fn report() -> Result<impl IntoResponse, AppError> {
-    let data = load_data().map_err(AppError::from)?;
+async fn report(Extension(identity): Extension<Identity>) -> Result<impl IntoResponse, AppError> {
+    let data = identity.load().map_err(AppError::from)?;
     let report = compute_report_data(&data);
     Ok(Json(report))
 }
 
 /// `GET /graph` — per-year stats suitable for rendering a chart.
-async fn graph() -> Result<impl IntoResponse, AppError> {
-    let data = load_data().map_err(AppError::from)?;
+async fn graph(Extension(identity): Extension<Identity>) -> Result<impl IntoResponse, AppError> {
+    let data = identity.load().map_err(AppError::from)?;
     let stats = compute_year_stats(&data);
     Ok(Json(serde_json::json!({
         "car_name": data.config.car_name,
@@ -192,8 +240,8 @@ async fn graph() -> Result<impl IntoResponse, AppError> {
 }
 
 /// `GET /list` — all recorded odometer readings plus config.
-async fn list() -> Result<impl IntoResponse, AppError> {
-    let data = load_data().map_err(AppError::from)?;
+async fn list(Extension(identity): Extension<Identity>) -> Result<impl IntoResponse, AppError> {
+    let data = identity.load().map_err(AppError::from)?;
     Ok(Json(data))
 }
 
@@ -227,19 +275,47 @@ async fn main() {
         )
         .init();
 
-    let web_state = web::WebState::new();
+    let limiter = ratelimit::RateLimiter::new();
+    let web_state = web::WebState::new(limiter.clone());
+
+    // Unauthenticated endpoints get IP-based limits. /login is bucketed
+    // separately from the mail-sending endpoints so that a burst of sign-in
+    // attempts cannot exhaust someone's ability to request a reset.
+    let login_limiter = limiter.clone();
+    let email_limiter = limiter.clone();
+
+    let login_routes = Router::new()
+        .route("/login", get(web::login_page).post(web::login_post))
+        .layer(middleware::from_fn(move |req, next| {
+            let limiter = login_limiter.clone();
+            async move {
+                ratelimit::limit_by_ip(limiter, ratelimit::LOGIN_PER_IP, "login", req, next).await
+            }
+        }))
+        .with_state(web_state.clone());
+
+    let email_routes = Router::new()
+        .route("/register", get(web::register_page).post(web::register_post))
+        .route("/forgot", get(web::forgot_page).post(web::forgot_post))
+        .layer(middleware::from_fn(move |req, next| {
+            let limiter = email_limiter.clone();
+            async move {
+                ratelimit::limit_by_ip(limiter, ratelimit::EMAIL_PER_IP, "email", req, next).await
+            }
+        }))
+        .with_state(web_state.clone());
 
     let web_routes = Router::new()
         .route("/", get(web::index))
-        .route("/login", get(web::login_page).post(web::login_post))
         .route("/logout", get(web::logout))
-        .route("/register", get(web::register_page).post(web::register_post))
         .route("/setup", get(web::setup_page).post(web::setup_post))
-        .route("/forgot", get(web::forgot_page).post(web::forgot_post))
+        .route("/reset", get(web::reset_page))
         .route("/dashboard", get(web::dashboard))
         .route("/web/record", post(web::web_record))
         .route("/web/config", post(web::web_config))
-        .with_state(web_state);
+        .with_state(web_state)
+        .merge(login_routes)
+        .merge(email_routes);
 
     let cors = build_cors();
 
@@ -269,6 +345,19 @@ async fn main() {
 
     tracing::info!("leasetrack-api listening on {}", addr);
     tracing::info!("Users file: {}", leasetrack_core::users_path().display());
+    if std::env::var("TRUST_PROXY").map(|v| matches!(v.as_str(), "1" | "true" | "yes")).unwrap_or(false) {
+        tracing::info!("TRUST_PROXY enabled — rate limits key off X-Forwarded-For");
+    } else {
+        tracing::warn!(
+            "TRUST_PROXY not set — rate limits key off the socket address. \
+             Behind a reverse proxy every client shares one bucket; set TRUST_PROXY=1 there."
+        );
+    }
+    match leasetrack_core::migrate_users_to_hashed_keys() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("Migrated {n} user(s) to hashed API keys"),
+        Err(e) => tracing::error!("Failed to migrate users file to hashed keys: {e}"),
+    }
     let users = leasetrack_core::load_users().unwrap_or_default();
     if !users.users.is_empty() {
         tracing::info!("User authentication enabled ({} user(s))", users.users.len());
@@ -277,5 +366,10 @@ async fn main() {
     } else {
         tracing::warn!("Authentication is DISABLED — add users to the users file or set API_KEY");
     }
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }

@@ -29,11 +29,86 @@ pub struct LeaseData {
 
 // ─── User / Auth Structures ───────────────────────────────────────────────────
 
-/// A single registered user. Each user has a unique email and their own API key.
+/// A single registered user.
+///
+/// The API key is stored only as a SHA-256 hash. Keys are 128-bit random
+/// tokens, so a plain digest is enough — there is nothing to brute force — and
+/// unlike a salted KDF it keeps lookup-by-key a single hash instead of one
+/// expensive comparison per registered user.
+///
+/// `reset_token` / `reset_expires` back the "forgot API key" flow. They are only
+/// populated between a reset request and the moment the emailed link is used.
+/// The API key itself is never rotated until that link is followed, so an
+/// unauthenticated request cannot lock a user out of their account.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
     pub email: String,
-    pub api_key: String,
+    /// SHA-256 of the API key, hex encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hash: Option<String>,
+    /// Legacy cleartext key, from before hashing. Only ever read, to migrate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_token: Option<String>,
+    /// Unix timestamp (seconds) after which `reset_token` is no longer accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_expires: Option<i64>,
+}
+
+impl User {
+    /// Create a user from a cleartext key, storing only its hash.
+    pub fn new(email: String, api_key: String) -> Self {
+        User {
+            email,
+            key_hash: Some(hash_key(&api_key)),
+            api_key: None,
+            reset_token: None,
+            reset_expires: None,
+        }
+    }
+
+    /// Replace this user's key with `api_key`, storing only its hash.
+    pub fn set_api_key(&mut self, api_key: &str) {
+        self.key_hash = Some(hash_key(api_key));
+        self.api_key = None;
+    }
+
+    /// Constant-time check of a presented key against the stored hash.
+    pub fn matches_key(&self, presented: &str) -> bool {
+        if presented.is_empty() {
+            return false;
+        }
+        match &self.key_hash {
+            Some(hash) => constant_time_eq_str(hash, &hash_key(presented)),
+            // Un-migrated record: fall back to the legacy cleartext comparison
+            // so a rollback or a stale file cannot lock anyone out.
+            None => self
+                .api_key
+                .as_deref()
+                .is_some_and(|k| constant_time_eq_str(k, presented)),
+        }
+    }
+
+    /// True when this record still carries a cleartext key.
+    fn needs_migration(&self) -> bool {
+        self.key_hash.is_none() && self.api_key.is_some()
+    }
+
+    /// Convert a legacy cleartext record to a hashed one, in place.
+    fn migrate(&mut self) {
+        if let (None, Some(key)) = (&self.key_hash, &self.api_key) {
+            self.key_hash = Some(hash_key(key));
+            self.api_key = None;
+        }
+    }
+}
+
+/// SHA-256 of an API key, hex encoded.
+pub fn hash_key(api_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(api_key.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Root structure of the users JSON file.
@@ -65,8 +140,18 @@ pub fn user_data_path(email: &str) -> PathBuf {
         PathBuf::from(home).join(".config")
     };
 
-    // Sanitize email: replace @ and . with _ so it's safe as a filename
-    let safe = email.replace('@', "_at_").replace('.', "_");
+    // Sanitize email into a filename with a strict whitelist. '@' keeps its
+    // historic "_at_" spelling so existing data files keep resolving; anything
+    // else outside [a-z0-9_-] becomes '_', so path separators and traversal
+    // sequences cannot escape the base directory even for untrusted input.
+    // The email is lowercased first so that Foo@x and foo@x map to one file.
+    let safe: String = email
+        .trim()
+        .to_lowercase()
+        .replace('@', "_at_")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
     base.join(format!("leasetrack-{safe}.json"))
 }
 
@@ -146,6 +231,17 @@ pub fn users_path() -> PathBuf {
 }
 
 pub fn load_users() -> Result<UsersData, String> {
+    let mut data = load_users_raw()?;
+    // Present a consistent hashed view to callers even if the file on disk has
+    // not been migrated yet.
+    for user in data.users.iter_mut() {
+        user.migrate();
+    }
+    Ok(data)
+}
+
+/// Load the users file exactly as stored, without migrating legacy records.
+fn load_users_raw() -> Result<UsersData, String> {
     let path = users_path();
     if !path.exists() {
         return Ok(UsersData::default());
@@ -163,30 +259,151 @@ pub fn save_users(data: &UsersData) -> Result<(), String> {
     }
     let content =
         serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write users file: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write users file: {}", e))?;
+    restrict_permissions(&path)
+}
+
+/// Restrict a file to owner-only read/write (0600).
+///
+/// The users file holds long-lived API keys in cleartext, so it must not be
+/// readable by other local accounts. No-op on non-Unix platforms.
+#[cfg(unix)]
+fn restrict_permissions(path: &PathBuf) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("Failed to set permissions on {}: {}", path.display(), e))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &PathBuf) -> Result<(), String> {
+    Ok(())
 }
 
 /// Look up a user by email and validate their API key. Returns the user if valid.
 pub fn authenticate_user(email: &str, api_key: &str) -> Option<User> {
     let users = load_users().unwrap_or_default();
-    users.users.into_iter().find(|u| {
-        u.email.eq_ignore_ascii_case(email) && constant_time_eq_str(&u.api_key, api_key)
-    })
+    users
+        .users
+        .into_iter()
+        .find(|u| u.email.eq_ignore_ascii_case(email) && u.matches_key(api_key))
 }
 
 /// Look up a user by api_key alone (for cookie/header-based auth after login).
 pub fn find_user_by_key(api_key: &str) -> Option<User> {
+    // An empty key must never match, otherwise a request with no credentials
+    // could authenticate against a malformed user record.
+    if api_key.is_empty() {
+        return None;
+    }
     let users = load_users().unwrap_or_default();
-    users
-        .users
-        .into_iter()
-        .find(|u| constant_time_eq_str(&u.api_key, api_key))
+    users.users.into_iter().find(|u| u.matches_key(api_key))
+}
+
+/// Rewrite the users file so no cleartext API keys remain.
+///
+/// Hashing is one-way, so existing keys are converted in place: users keep the
+/// key they already have and notice nothing. Safe to call on every startup —
+/// it only writes when there is something to convert. Returns how many records
+/// were migrated.
+pub fn migrate_users_to_hashed_keys() -> Result<usize, String> {
+    let mut users = load_users_raw()?;
+    let pending = users.users.iter().filter(|u| u.needs_migration()).count();
+    if pending == 0 {
+        return Ok(0);
+    }
+    for user in users.users.iter_mut() {
+        user.migrate();
+    }
+    save_users(&users)?;
+    Ok(pending)
 }
 
 /// Generate a cryptographically random API key (32 hex characters).
 pub fn generate_api_key() -> String {
     let bytes: [u8; 16] = rand::thread_rng().r#gen();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Generate a cryptographically random 256-bit token (64 hex characters).
+///
+/// Used for session identifiers, CSRF tokens and single-use reset links.
+pub fn generate_token() -> String {
+    let bytes: [u8; 32] = rand::thread_rng().r#gen();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Compare two secrets without leaking their contents through timing.
+pub fn secret_eq(a: &str, b: &str) -> bool {
+    constant_time_eq_str(a, b)
+}
+
+/// How long a password-reset link stays valid.
+pub const RESET_TOKEN_TTL_SECS: i64 = 30 * 60;
+
+/// Issue a single-use reset token for `email`, if that user exists.
+///
+/// Returns the token, or `None` when no such user is registered. The user's API
+/// key is deliberately left untouched: it is only rotated once the emailed link
+/// is actually followed, so an unauthenticated request cannot lock anyone out.
+pub fn issue_reset_token(email: &str) -> Result<Option<String>, String> {
+    let mut users = load_users()?;
+    let now = Local::now().timestamp();
+    let token = generate_token();
+    let found = match users
+        .users
+        .iter_mut()
+        .find(|u| u.email.eq_ignore_ascii_case(email))
+    {
+        Some(user) => {
+            user.reset_token = Some(token.clone());
+            user.reset_expires = Some(now + RESET_TOKEN_TTL_SECS);
+            true
+        }
+        None => false,
+    };
+    if !found {
+        return Ok(None);
+    }
+    save_users(&users)?;
+    Ok(Some(token))
+}
+
+/// Redeem a reset token: rotate the user's API key and consume the token.
+///
+/// Returns `(email, new_api_key)` on success. Fails when the token is unknown,
+/// already used, or expired.
+pub fn redeem_reset_token(token: &str) -> Result<(String, String), String> {
+    if token.is_empty() {
+        return Err("Invalid or expired reset link.".to_string());
+    }
+    let mut users = load_users()?;
+    let now = Local::now().timestamp();
+
+    let user = users
+        .users
+        .iter_mut()
+        .find(|u| {
+            u.reset_token
+                .as_deref()
+                .is_some_and(|t| constant_time_eq_str(t, token))
+        })
+        .ok_or_else(|| "Invalid or expired reset link.".to_string())?;
+
+    if user.reset_expires.is_none_or(|exp| now > exp) {
+        // Expired: consume the token so it cannot be retried.
+        user.reset_token = None;
+        user.reset_expires = None;
+        save_users(&users)?;
+        return Err("Invalid or expired reset link.".to_string());
+    }
+
+    let new_key = generate_api_key();
+    user.set_api_key(&new_key);
+    user.reset_token = None;
+    user.reset_expires = None;
+    let email = user.email.clone();
+    save_users(&users)?;
+    Ok((email, new_key))
 }
 
 fn constant_time_eq_str(a: &str, b: &str) -> bool {
