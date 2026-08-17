@@ -944,6 +944,9 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
     header h1 { font-size: 1.1rem; color: var(--accent); }
     header a { font-size: 0.8rem; color: var(--muted); text-decoration: none; }
     header a:hover { color: var(--text); }
+    header a.brand { font-size: inherit; }
+    header a.brand h1 { transition: opacity 0.15s; }
+    header a.brand:hover h1 { opacity: 0.75; }
     main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
     @media(max-width:720px) { main { grid-template-columns: 1fr; } }
     .panel { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
@@ -1039,7 +1042,7 @@ const DASHBOARD_HTML: &str = r#"<!doctype html>
   </div>
   {% endif %}
   <header>
-    <h1>LeaseTrack — {{ car_name }}</h1>
+    <a class="brand" href="/dashboard"><h1>LeaseTrack — {{ car_name }}</h1></a>
     <div style="display:flex;align-items:center;gap:1rem;">
       <span style="font-size:0.8rem;color:var(--muted)">{{ email }}</span>
       <a href="/logout" style="font-size:0.8rem;padding:0.3rem 0.75rem;border:1px solid var(--border);border-radius:6px;color:var(--muted);text-decoration:none;">Sign out</a>
