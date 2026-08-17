@@ -70,6 +70,7 @@ Shares `leasetrack-core` with the CLI.
 | `API_KEY` | *(unset)* | Legacy single-user key. Only consulted when no users are registered |
 | `CORS_ORIGINS` | *(unset)* | `*` for permissive, comma-separated origins, or unset to deny |
 | `APP_ENV` | `development` | Set to `production` to mark session cookies `Secure` (HTTPS only) |
+| `TRUST_PROXY` | *(unset)* | Set to `1` when behind a reverse proxy, so rate limits key off `X-Forwarded-For` rather than the proxy's own address |
 | `APP_BASE_URL` | `http://localhost:3000` | Public URL used to build links in outgoing email |
 | `LEASETRACK_DATA_DIR` | `~/.config` | Directory holding the per-user data files |
 | `LEASETRACK_DATA_FILE` | `~/.config/leasetrack.json` | Shared data file (CLI, and the API in legacy mode) |
@@ -91,6 +92,27 @@ Once any user is registered, a valid key is required — requests without one ge
 `401`. If no users exist the server falls back to the legacy single-tenant
 modes: `API_KEY` if it is set, otherwise fully open for local development. Both
 fall back to the shared `LEASETRACK_DATA_FILE`. `/health` is always public.
+
+### Rate limiting
+
+The unauthenticated endpoints are capped in memory, per instance:
+
+| Endpoint | Limit |
+|---|---|
+| `POST /login` | 10 per 15 min, per client IP |
+| `POST /register`, `POST /forgot` | 5 per hour, per client IP |
+| any mail to one address | 5 per hour, per email address |
+
+The per-address cap is what stops a distributed flood of one person's inbox,
+which an IP limit alone cannot. Exceeding a limit returns `429` with a
+`Retry-After` header; `/forgot` and `/register` still render their normal
+success page so the cap cannot be used to probe which addresses are registered.
+
+**Behind a proxy, set `TRUST_PROXY=1`.** Otherwise every request appears to
+come from the proxy and all clients share a single bucket — one abusive client
+would lock out everyone. It is off by default because trusting
+`X-Forwarded-For` on a directly reachable server would let anyone bypass the
+limits with a forged header.
 
 ### Build & run
 

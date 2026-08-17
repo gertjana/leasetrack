@@ -31,10 +31,11 @@ pub struct WebState {
     pub env: Arc<Environment<'static>>,
     pub app_env: String,
     sessions: Arc<Mutex<HashMap<String, Session>>>,
+    limiter: crate::ratelimit::RateLimiter,
 }
 
 impl WebState {
-    pub fn new() -> Self {
+    pub fn new(limiter: crate::ratelimit::RateLimiter) -> Self {
         let mut env = Environment::new();
         env.add_template_owned("login.html".to_string(), LOGIN_HTML.to_string())
             .expect("login template");
@@ -53,6 +54,7 @@ impl WebState {
             env: Arc::new(env),
             app_env,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            limiter,
         }
     }
 
@@ -408,6 +410,14 @@ pub async fn forgot_post(
 ) -> Response {
     let email = form.email.trim().to_lowercase();
 
+    // Cap how much mail one address can be made to receive, whatever the
+    // source. Report success regardless, so this cannot be used to probe which
+    // addresses are registered.
+    if crate::ratelimit::check_email_quota(&state.limiter, &email).is_err() {
+        tracing::warn!("per-address reset quota exhausted");
+        return render(&state, "forgot.html", context! { success => true, app_env => state.app_env });
+    }
+
     match issue_reset_token(&email) {
         Ok(Some(token)) => {
             let link = format!("{}/reset?token={}", base_url(), token);
@@ -491,6 +501,11 @@ pub async fn register_post(
             "register.html",
             context! { error => "Please enter a valid email address.", success => false, app_env => state.app_env },
         );
+    }
+
+    if crate::ratelimit::check_email_quota(&state.limiter, &email).is_err() {
+        tracing::warn!("per-address registration quota exhausted");
+        return render(&state, "register.html", context! { error => "", success => true, app_env => state.app_env });
     }
 
     let mut users = load_users().unwrap_or_default();

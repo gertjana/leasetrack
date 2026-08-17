@@ -1,5 +1,6 @@
 mod web;
 mod email;
+mod ratelimit;
 
 use axum::{
     body::Body,
@@ -274,20 +275,47 @@ async fn main() {
         )
         .init();
 
-    let web_state = web::WebState::new();
+    let limiter = ratelimit::RateLimiter::new();
+    let web_state = web::WebState::new(limiter.clone());
+
+    // Unauthenticated endpoints get IP-based limits. /login is bucketed
+    // separately from the mail-sending endpoints so that a burst of sign-in
+    // attempts cannot exhaust someone's ability to request a reset.
+    let login_limiter = limiter.clone();
+    let email_limiter = limiter.clone();
+
+    let login_routes = Router::new()
+        .route("/login", get(web::login_page).post(web::login_post))
+        .layer(middleware::from_fn(move |req, next| {
+            let limiter = login_limiter.clone();
+            async move {
+                ratelimit::limit_by_ip(limiter, ratelimit::LOGIN_PER_IP, "login", req, next).await
+            }
+        }))
+        .with_state(web_state.clone());
+
+    let email_routes = Router::new()
+        .route("/register", get(web::register_page).post(web::register_post))
+        .route("/forgot", get(web::forgot_page).post(web::forgot_post))
+        .layer(middleware::from_fn(move |req, next| {
+            let limiter = email_limiter.clone();
+            async move {
+                ratelimit::limit_by_ip(limiter, ratelimit::EMAIL_PER_IP, "email", req, next).await
+            }
+        }))
+        .with_state(web_state.clone());
 
     let web_routes = Router::new()
         .route("/", get(web::index))
-        .route("/login", get(web::login_page).post(web::login_post))
         .route("/logout", get(web::logout))
-        .route("/register", get(web::register_page).post(web::register_post))
         .route("/setup", get(web::setup_page).post(web::setup_post))
-        .route("/forgot", get(web::forgot_page).post(web::forgot_post))
         .route("/reset", get(web::reset_page))
         .route("/dashboard", get(web::dashboard))
         .route("/web/record", post(web::web_record))
         .route("/web/config", post(web::web_config))
-        .with_state(web_state);
+        .with_state(web_state)
+        .merge(login_routes)
+        .merge(email_routes);
 
     let cors = build_cors();
 
@@ -317,6 +345,13 @@ async fn main() {
 
     tracing::info!("leasetrack-api listening on {}", addr);
     tracing::info!("Users file: {}", leasetrack_core::users_path().display());
+    if std::env::var("TRUST_PROXY").map(|v| matches!(v.as_str(), "1" | "true" | "yes")).unwrap_or(false) {
+        tracing::info!("TRUST_PROXY enabled — rate limits key off X-Forwarded-For");
+    } else {
+        tracing::warn!(
+            "TRUST_PROXY not set — rate limits key off the socket address. \
+             Behind a reverse proxy every client shares one bucket; set TRUST_PROXY=1 there."
+        );
     match leasetrack_core::migrate_users_to_hashed_keys() {
         Ok(0) => {}
         Ok(n) => tracing::info!("Migrated {n} user(s) to hashed API keys"),
@@ -330,5 +365,10 @@ async fn main() {
     } else {
         tracing::warn!("Authentication is DISABLED — add users to the users file or set API_KEY");
     }
-    axum::serve(listener, app).await.expect("server error");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .expect("server error");
 }
