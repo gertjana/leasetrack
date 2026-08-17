@@ -317,6 +317,11 @@ async fn main() {
 
     tracing::info!("leasetrack-api listening on {}", addr);
     tracing::info!("Users file: {}", leasetrack_core::users_path().display());
+    match leasetrack_core::migrate_users_to_hashed_keys() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("Migrated {n} user(s) to hashed API keys"),
+        Err(e) => tracing::error!("Failed to migrate users file to hashed keys: {e}"),
+    }
     let users = leasetrack_core::load_users().unwrap_or_default();
     if !users.users.is_empty() {
         tracing::info!("User authentication enabled ({} user(s))", users.users.len());

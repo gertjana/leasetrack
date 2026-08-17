@@ -29,7 +29,12 @@ pub struct LeaseData {
 
 // ─── User / Auth Structures ───────────────────────────────────────────────────
 
-/// A single registered user. Each user has a unique email and their own API key.
+/// A single registered user.
+///
+/// The API key is stored only as a SHA-256 hash. Keys are 128-bit random
+/// tokens, so a plain digest is enough — there is nothing to brute force — and
+/// unlike a salted KDF it keeps lookup-by-key a single hash instead of one
+/// expensive comparison per registered user.
 ///
 /// `reset_token` / `reset_expires` back the "forgot API key" flow. They are only
 /// populated between a reset request and the moment the emailed link is used.
@@ -38,7 +43,12 @@ pub struct LeaseData {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
     pub email: String,
-    pub api_key: String,
+    /// SHA-256 of the API key, hex encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_hash: Option<String>,
+    /// Legacy cleartext key, from before hashing. Only ever read, to migrate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_token: Option<String>,
     /// Unix timestamp (seconds) after which `reset_token` is no longer accepted.
@@ -47,10 +57,58 @@ pub struct User {
 }
 
 impl User {
-    /// Create a user with no pending password reset.
+    /// Create a user from a cleartext key, storing only its hash.
     pub fn new(email: String, api_key: String) -> Self {
-        User { email, api_key, reset_token: None, reset_expires: None }
+        User {
+            email,
+            key_hash: Some(hash_key(&api_key)),
+            api_key: None,
+            reset_token: None,
+            reset_expires: None,
+        }
     }
+
+    /// Replace this user's key with `api_key`, storing only its hash.
+    pub fn set_api_key(&mut self, api_key: &str) {
+        self.key_hash = Some(hash_key(api_key));
+        self.api_key = None;
+    }
+
+    /// Constant-time check of a presented key against the stored hash.
+    pub fn matches_key(&self, presented: &str) -> bool {
+        if presented.is_empty() {
+            return false;
+        }
+        match &self.key_hash {
+            Some(hash) => constant_time_eq_str(hash, &hash_key(presented)),
+            // Un-migrated record: fall back to the legacy cleartext comparison
+            // so a rollback or a stale file cannot lock anyone out.
+            None => self
+                .api_key
+                .as_deref()
+                .is_some_and(|k| constant_time_eq_str(k, presented)),
+        }
+    }
+
+    /// True when this record still carries a cleartext key.
+    fn needs_migration(&self) -> bool {
+        self.key_hash.is_none() && self.api_key.is_some()
+    }
+
+    /// Convert a legacy cleartext record to a hashed one, in place.
+    fn migrate(&mut self) {
+        if let (None, Some(key)) = (&self.key_hash, &self.api_key) {
+            self.key_hash = Some(hash_key(key));
+            self.api_key = None;
+        }
+    }
+}
+
+/// SHA-256 of an API key, hex encoded.
+pub fn hash_key(api_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(api_key.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Root structure of the users JSON file.
@@ -173,6 +231,17 @@ pub fn users_path() -> PathBuf {
 }
 
 pub fn load_users() -> Result<UsersData, String> {
+    let mut data = load_users_raw()?;
+    // Present a consistent hashed view to callers even if the file on disk has
+    // not been migrated yet.
+    for user in data.users.iter_mut() {
+        user.migrate();
+    }
+    Ok(data)
+}
+
+/// Load the users file exactly as stored, without migrating legacy records.
+fn load_users_raw() -> Result<UsersData, String> {
     let path = users_path();
     if !path.exists() {
         return Ok(UsersData::default());
@@ -213,9 +282,10 @@ fn restrict_permissions(_path: &PathBuf) -> Result<(), String> {
 /// Look up a user by email and validate their API key. Returns the user if valid.
 pub fn authenticate_user(email: &str, api_key: &str) -> Option<User> {
     let users = load_users().unwrap_or_default();
-    users.users.into_iter().find(|u| {
-        u.email.eq_ignore_ascii_case(email) && constant_time_eq_str(&u.api_key, api_key)
-    })
+    users
+        .users
+        .into_iter()
+        .find(|u| u.email.eq_ignore_ascii_case(email) && u.matches_key(api_key))
 }
 
 /// Look up a user by api_key alone (for cookie/header-based auth after login).
@@ -226,10 +296,26 @@ pub fn find_user_by_key(api_key: &str) -> Option<User> {
         return None;
     }
     let users = load_users().unwrap_or_default();
-    users
-        .users
-        .into_iter()
-        .find(|u| constant_time_eq_str(&u.api_key, api_key))
+    users.users.into_iter().find(|u| u.matches_key(api_key))
+}
+
+/// Rewrite the users file so no cleartext API keys remain.
+///
+/// Hashing is one-way, so existing keys are converted in place: users keep the
+/// key they already have and notice nothing. Safe to call on every startup —
+/// it only writes when there is something to convert. Returns how many records
+/// were migrated.
+pub fn migrate_users_to_hashed_keys() -> Result<usize, String> {
+    let mut users = load_users_raw()?;
+    let pending = users.users.iter().filter(|u| u.needs_migration()).count();
+    if pending == 0 {
+        return Ok(0);
+    }
+    for user in users.users.iter_mut() {
+        user.migrate();
+    }
+    save_users(&users)?;
+    Ok(pending)
 }
 
 /// Generate a cryptographically random API key (32 hex characters).
@@ -312,7 +398,7 @@ pub fn redeem_reset_token(token: &str) -> Result<(String, String), String> {
     }
 
     let new_key = generate_api_key();
-    user.api_key = new_key.clone();
+    user.set_api_key(&new_key);
     user.reset_token = None;
     user.reset_expires = None;
     let email = user.email.clone();
