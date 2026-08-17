@@ -352,6 +352,7 @@ async fn main() {
             "TRUST_PROXY not set — rate limits key off the socket address. \
              Behind a reverse proxy every client shares one bucket; set TRUST_PROXY=1 there."
         );
+    }
     match leasetrack_core::migrate_users_to_hashed_keys() {
         Ok(0) => {}
         Ok(n) => tracing::info!("Migrated {n} user(s) to hashed API keys"),
