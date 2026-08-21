@@ -43,7 +43,13 @@ pub fn parse_config(form: &ConfigForm) -> std::result::Result<LeaseConfig, Strin
         _ => return Err("Allowed km/year must be greater than 0.".to_string()),
     };
 
-    let start_odometer: u32 = form.start_odometer.trim().parse().unwrap_or(0);
+    // Parsed strictly rather than defaulting: silently falling back to 0 would
+    // overwrite a mistyped reading and skew every "total driven" figure derived
+    // from it.
+    let start_odometer: u32 = match form.start_odometer.trim().parse() {
+        Ok(n) => n,
+        Err(_) => return Err("Start odometer must be a whole number of km.".to_string()),
+    };
 
     let car_name = form.car_name.trim().to_string();
     if car_name.is_empty() || car_name.len() > 100 {

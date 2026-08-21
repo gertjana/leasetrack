@@ -70,15 +70,20 @@ async fn web_record(cx: &Cx, Form(form): Form<RecordForm>) -> Result<Response> {
     let (success, error) = match (odometer, date) {
         (Ok(odo), Ok(day)) => match load_user_data(&email) {
             Ok(mut data) => match add_record(&mut data, odo, day) {
-                Ok(warnings) => {
-                    let _ = save_user_data(&email, &data);
-                    let message = if warnings.is_empty() {
-                        format!("Recorded {odo} km on {day}")
-                    } else {
-                        format!("Recorded {odo} km on {day} ({})", warnings.join("; "))
-                    };
-                    (Some(message), None)
-                }
+                Ok(warnings) => match save_user_data(&email, &data) {
+                    Ok(()) => {
+                        let message = if warnings.is_empty() {
+                            format!("Recorded {odo} km on {day}")
+                        } else {
+                            format!("Recorded {odo} km on {day} ({})", warnings.join("; "))
+                        };
+                        (Some(message), None)
+                    }
+                    // The reading was accepted in memory but never persisted.
+                    // Reporting success here would promise a record that is
+                    // already gone on the next page load.
+                    Err(e) => (None, Some(e)),
+                },
                 Err(e) => (None, Some(e)),
             },
             Err(e) => (None, Some(e)),
