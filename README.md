@@ -130,7 +130,8 @@ The unauthenticated endpoints are capped in memory, per instance:
 
 | Endpoint | Limit |
 |---|---|
-| `POST /login`, `POST /reset` | 10 per 15 min, per client IP |
+| `POST /login` | 10 per 15 min, per client IP |
+| `POST /reset` | 10 per 15 min, per client IP (counted separately from sign-in) |
 | `POST /register`, `POST /forgot` | 5 per hour, per client IP |
 | any mail to one address | 5 per hour, per email address |
 

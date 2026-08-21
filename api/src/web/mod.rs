@@ -139,10 +139,11 @@ async fn rate_limit(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
 
     let path = topcoat::router::request::uri(cx).path().to_owned();
     let bucketed = match path.as_str() {
-        // `/reset` shares the sign-in quota: it is unauthenticated and, now that
-        // redeeming happens on POST, it is the other endpoint that trades a
-        // secret for account access.
-        "/login" | "/reset" => Some(("login", ratelimit::LOGIN_PER_IP)),
+        "/login" => Some(("login", ratelimit::LOGIN_PER_IP)),
+        // Counted separately from sign-in: a user recovering an account has
+        // usually just spent sign-in attempts failing, and sharing a counter
+        // would block the reset they came for.
+        "/reset" => Some(("reset", ratelimit::RESET_PER_IP)),
         "/register" | "/forgot" => Some(("email", ratelimit::EMAIL_PER_IP)),
         _ => None,
     };
