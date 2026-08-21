@@ -110,13 +110,27 @@ Cross-site request forgery is blocked by Topcoat's origin policy, which rejects
 any unsafe request that is not same-origin, rather than by CSRF form tokens.
 Every state-changing action is therefore a `POST` — including signing out.
 
+### Resetting an API key
+
+`POST /forgot` emails a single-use link valid for 30 minutes. Opening that link
+(`GET /reset?token=…`) only renders a confirmation page; the key is rotated by
+the `POST /reset` that the confirm button submits.
+
+The two steps are deliberate. Mail scanners, link previewers and browser
+prefetchers all follow URLs in email, and a token spent by one of those would
+rotate the key without the user acting, leaving them holding an expired link.
+Keeping `GET` free of side effects also matches HTTP's safe-method semantics.
+
+Redeeming a token rotates the key, emails the new one, and invalidates every
+session for that account.
+
 ### Rate limiting
 
 The unauthenticated endpoints are capped in memory, per instance:
 
 | Endpoint | Limit |
 |---|---|
-| `POST /login` | 10 per 15 min, per client IP |
+| `POST /login`, `POST /reset` | 10 per 15 min, per client IP |
 | `POST /register`, `POST /forgot` | 5 per hour, per client IP |
 | any mail to one address | 5 per hour, per email address |
 

@@ -271,7 +271,13 @@ struct ResetQuery {
     token: String,
 }
 
-/// `GET /reset?token=…` — redeem a reset link and show the new API key once.
+/// `GET /reset?token=…` — ask for confirmation, without redeeming anything.
+///
+/// Rotating the key here would let anything that merely *fetches* the URL do it:
+/// mail scanners, link previewers and browser prefetchers all follow links in
+/// email. Because the token is single-use, that burns it before the user ever
+/// clicks, leaving them with an expired link and a key they did not ask to
+/// change. The rotation therefore happens in [`reset_post`] below.
 #[route(GET "/reset")]
 async fn reset_page(cx: &Cx) -> Result<Response> {
     // A malformed query string is treated as a bad token rather than an error,
@@ -281,7 +287,43 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         Err(_) => String::new(),
     };
 
-    let (error, api_key) = match redeem_reset_token(&token) {
+    if token.is_empty() {
+        return reset_result_view(cx, "Invalid or expired reset link.", "").await;
+    }
+
+    view! { cx =>
+        document(
+            title: "LeaseTrack — Reset API Key",
+            body_class: "centered",
+            no_referrer: true,
+            <div class="card card-wide">
+                <h1>"LeaseTrack"</h1>
+                <p class="subtitle">"Reset your API key"</p>
+                <p class="hint-block">
+                    "Confirm to generate a new API key. Your current key stops working \
+                     immediately, and you will be signed out everywhere."
+                </p>
+                <form method="post" action="/reset">
+                    <input type="hidden" name="token" value=(&token)>
+                    <button type="submit">"Reset my API key"</button>
+                </form>
+                <a class="back" href="/login">"Cancel"</a>
+            </div>
+        )
+    }?
+    .into_response(cx)
+}
+
+#[derive(Deserialize)]
+struct ResetForm {
+    #[serde(default)]
+    token: String,
+}
+
+/// `POST /reset` — redeem the token and show the new API key once.
+#[route(POST "/reset")]
+async fn reset_post(cx: &Cx, Form(form): Form<ResetForm>) -> Result<Response> {
+    let (error, api_key) = match redeem_reset_token(&form.token) {
         Ok((email, new_key)) => {
             // The old key is gone, so any session resting on it must go too.
             store(cx).delete_for_email(&email);
@@ -293,6 +335,11 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         Err(e) => (e, String::new()),
     };
 
+    reset_result_view(cx, &error, &api_key).await
+}
+
+/// The outcome page: either the freshly minted key, or why the link failed.
+async fn reset_result_view(cx: &Cx, error: &str, api_key: &str) -> Result<Response> {
     view! { cx =>
         document(
             title: "LeaseTrack — Reset API Key",
@@ -302,14 +349,14 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                 <h1>"LeaseTrack"</h1>
                 <p class="subtitle">"Reset your API key"</p>
                 if !error.is_empty() {
-                    <div class="error">(&error)</div>
+                    <div class="error">(error)</div>
                     <p class="hint-block">
                         "Reset links can only be used once and expire after 30 minutes."
                     </p>
                     <a class="back" href="/forgot">"Request a new link"</a>
                 } else {
                     <div class="success">"Your API key has been reset."</div>
-                    <code class="key">(&api_key)</code>
+                    <code class="key">(api_key)</code>
                     <p class="hint-block">
                         "Copy it now — this is the only time it is shown. A copy has also \
                          been emailed to you. Your previous key no longer works."
