@@ -11,13 +11,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use tower_cookies::CookieManagerLayer;
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
     add_record, compute_report_data, compute_year_stats, find_user_by_key, load_data,
     load_user_data, load_users, save_data, save_user_data, LeaseConfig, LeaseData,
 };
 use serde::{Deserialize, Serialize};
+use topcoat::router::tower::TowerService;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
@@ -276,46 +276,6 @@ async fn main() {
         .init();
 
     let limiter = ratelimit::RateLimiter::new();
-    let web_state = web::WebState::new(limiter.clone());
-
-    // Unauthenticated endpoints get IP-based limits. /login is bucketed
-    // separately from the mail-sending endpoints so that a burst of sign-in
-    // attempts cannot exhaust someone's ability to request a reset.
-    let login_limiter = limiter.clone();
-    let email_limiter = limiter.clone();
-
-    let login_routes = Router::new()
-        .route("/login", get(web::login_page).post(web::login_post))
-        .layer(middleware::from_fn(move |req, next| {
-            let limiter = login_limiter.clone();
-            async move {
-                ratelimit::limit_by_ip(limiter, ratelimit::LOGIN_PER_IP, "login", req, next).await
-            }
-        }))
-        .with_state(web_state.clone());
-
-    let email_routes = Router::new()
-        .route("/register", get(web::register_page).post(web::register_post))
-        .route("/forgot", get(web::forgot_page).post(web::forgot_post))
-        .layer(middleware::from_fn(move |req, next| {
-            let limiter = email_limiter.clone();
-            async move {
-                ratelimit::limit_by_ip(limiter, ratelimit::EMAIL_PER_IP, "email", req, next).await
-            }
-        }))
-        .with_state(web_state.clone());
-
-    let web_routes = Router::new()
-        .route("/", get(web::index))
-        .route("/logout", get(web::logout))
-        .route("/setup", get(web::setup_page).post(web::setup_post))
-        .route("/reset", get(web::reset_page))
-        .route("/dashboard", get(web::dashboard))
-        .route("/web/record", post(web::web_record))
-        .route("/web/config", post(web::web_config))
-        .with_state(web_state)
-        .merge(login_routes)
-        .merge(email_routes);
 
     let cors = build_cors();
 
@@ -328,13 +288,15 @@ async fn main() {
         .route("/list", get(list))
         .layer(middleware::from_fn(check_api_key));
 
+    // The JSON API keeps owning the server. Everything it does not claim —
+    // every web page — falls through to the Topcoat router, which renders the
+    // HTML, and carries its own sessions, cookies and rate limiting.
     let app = Router::new()
         .route("/health", get(health))
         .merge(protected)
-        .merge(web_routes)
+        .fallback_service(TowerService::new(web::router(limiter)))
         // Reject bodies larger than 64 KB — more than enough for lease data.
         .layer(DefaultBodyLimit::max(65_536))
-        .layer(CookieManagerLayer::new())
         .layer(cors);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".into());

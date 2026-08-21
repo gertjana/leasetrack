@@ -17,7 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-minijinja = "2"
-tower-cookies = "0.10"
-axum-extra = { version = "0.10", features = ["form", "cookie"] }
+# The web pages are rendered by Topcoat; `tower` bridges its router into the
+# axum server that still owns the JSON API.
+topcoat = { version = "0.6.2", features = ["tower"] }
 reqwest = { version = "0.12", features = ["json"] }

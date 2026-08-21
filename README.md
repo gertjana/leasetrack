@@ -59,7 +59,8 @@ cargo run -p leasetrack-cli -- --help
 
 ## api
 
-An HTTP REST API server built with [Axum](https://github.com/tokio-rs/axum).
+An HTTP REST API server built with [Axum](https://github.com/tokio-rs/axum),
+serving the browser pages with [Topcoat](https://github.com/tokio-rs/topcoat).
 Shares `leasetrack-core` with the CLI.
 
 ### Environment variables
@@ -69,7 +70,7 @@ Shares `leasetrack-core` with the CLI.
 | `PORT` | `3000` | Port to listen on |
 | `API_KEY` | *(unset)* | Legacy single-user key. Only consulted when no users are registered |
 | `CORS_ORIGINS` | *(unset)* | `*` for permissive, comma-separated origins, or unset to deny |
-| `APP_ENV` | `development` | Set to `production` to mark session cookies `Secure` (HTTPS only) |
+| `APP_ENV` | `development` | Anything other than `production` shows a preview banner on every page |
 | `TRUST_PROXY` | *(unset)* | Set to `1` when behind a reverse proxy, so rate limits key off `X-Forwarded-For` rather than the proxy's own address |
 | `APP_BASE_URL` | `http://localhost:3000` | Public URL used to build links in outgoing email |
 | `LEASETRACK_DATA_DIR` | `~/.config` | Directory holding the per-user data files |
@@ -92,6 +93,22 @@ Once any user is registered, a valid key is required — requests without one ge
 `401`. If no users exist the server falls back to the legacy single-tenant
 modes: `API_KEY` if it is set, otherwise fully open for local development. Both
 fall back to the shared `LEASETRACK_DATA_FILE`. `/health` is always public.
+
+### Browser sessions
+
+Signing in to the dashboard creates a server-side session and sets a
+`__Host-session` cookie: `HttpOnly`, `SameSite=Lax`, `Secure`, 12 hour lifetime.
+Sessions live in memory, so they reset on restart and are per-instance rather
+than shared across replicas. Rotating an API key through `/forgot` invalidates
+every session for that account.
+
+**Because the cookie is `Secure`, the dashboard needs HTTPS** — browsers will
+not store it over plain `http://`, except on `localhost`. Terminate TLS at the
+proxy in front of the app.
+
+Cross-site request forgery is blocked by Topcoat's origin policy, which rejects
+any unsafe request that is not same-origin, rather than by CSRF form tokens.
+Every state-changing action is therefore a `POST` — including signing out.
 
 ### Rate limiting
 
@@ -138,11 +155,12 @@ A [Dockerfile](./Dockerfile) is included for containerised deployment.
 
 ### Web dashboard
 
-The API also serves a browser-based dashboard at `/web` (login required).
+The API also serves a browser-based dashboard, rendered server-side with
+[Topcoat](https://github.com/tokio-rs/topcoat). Sign in at `/login` with the
+same email and API key used for the JSON API; `/` redirects there.
 
-| Variable | Default | Description |
-|---|---|---|
-| `WEB_PASSWORD` | *(required)* | Password for the web dashboard |
+The pages are mounted as the axum router's fallback, so the JSON API keeps
+owning the server and every path it does not claim is rendered by Topcoat.
 
 The dashboard is a single-page HTML interface with:
 

@@ -11,14 +11,8 @@
 //! State is in-memory, like the session store, so it resets on restart and is
 //! per-instance rather than shared across replicas.
 
-use axum::{
-    body::Body,
-    extract::{ConnectInfo, Request},
-    http::{header, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::extract::ConnectInfo;
+use axum::http::{Extensions, HeaderMap};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -101,17 +95,18 @@ impl RateLimiter {
 /// and the only hop a client cannot forge. It defaults to off, because
 /// trusting that header on a directly-reachable server would let anyone
 /// sidestep the limit with a fabricated value.
-pub fn client_key(req: &Request<Body>) -> String {
+///
+/// Takes the parts rather than a whole request so it can be called from a
+/// Topcoat handler, which exposes headers and extensions but not a `Request`.
+/// `ConnectInfo` is inserted by the surrounding axum server and survives into
+/// Topcoat because the tower bridge preserves request extensions.
+pub fn client_key_from(headers: &HeaderMap, extensions: &Extensions) -> String {
     let trust_proxy = std::env::var("TRUST_PROXY")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
 
     if trust_proxy {
-        if let Some(forwarded) = req
-            .headers()
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-        {
+        if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
             if let Some(ip) = forwarded.rsplit(',').next().map(str::trim) {
                 if !ip.is_empty() {
                     return ip.to_string();
@@ -120,59 +115,10 @@ pub fn client_key(req: &Request<Body>) -> String {
         }
     }
 
-    req.extensions()
+    extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn too_many(retry_after: u64, html: bool) -> Response {
-    let mut response = if html {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::response::Html(format!(
-                "<!doctype html><meta charset=\"utf-8\"><title>Too many requests</title>\
-                 <body style=\"font-family:'Courier New',monospace;padding:2rem\">\
-                 <h1>Too many requests</h1>\
-                 <p>Please wait about {} minute(s) and try again.</p>\
-                 <p><a href=\"/login\">Back to sign in</a></p></body>",
-                retry_after.div_ceil(60)
-            )),
-        )
-            .into_response()
-    } else {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({ "error": "too many requests" })),
-        )
-            .into_response()
-    };
-    if let Ok(value) = retry_after.to_string().parse() {
-        response.headers_mut().insert(header::RETRY_AFTER, value);
-    }
-    response
-}
-
-/// Middleware limiting POSTs by client IP.
-///
-/// GET requests pass through untouched so that merely loading a page does not
-/// consume anyone's quota.
-pub async fn limit_by_ip(
-    limiter: RateLimiter,
-    quota: Quota,
-    bucket: &'static str,
-    req: Request<Body>,
-    next: Next,
-) -> Response {
-    if req.method() != axum::http::Method::POST {
-        return next.run(req).await;
-    }
-    let key = format!("{bucket}:ip:{}", client_key(&req));
-    if let Err(retry) = limiter.check(&key, quota) {
-        tracing::warn!("rate limited {bucket} for {}", client_key(&req));
-        return too_many(retry, true);
-    }
-    next.run(req).await
 }
 
 /// Check the per-address quota. Called from the handlers, which have already
