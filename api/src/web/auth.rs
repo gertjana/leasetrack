@@ -11,6 +11,7 @@ use topcoat::{
     router::{
         content::Form,
         error::see_other,
+        header, HeaderValue,
         query_params, route,
         response::{IntoResponse, Response},
     },
@@ -291,7 +292,7 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         return reset_result_view(cx, "Invalid or expired reset link.", "").await;
     }
 
-    view! { cx =>
+    let mut response = view! { cx =>
         document(
             title: "LeaseTrack — Reset API Key",
             body_class: "centered",
@@ -311,7 +312,15 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
             </div>
         )
     }?
-    .into_response(cx)
+    .into_response(cx)?;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    Ok(response)
 }
 
 #[derive(Deserialize)]
@@ -340,7 +349,7 @@ async fn reset_post(cx: &Cx, Form(form): Form<ResetForm>) -> Result<Response> {
 
 /// The outcome page: either the freshly minted key, or why the link failed.
 async fn reset_result_view(cx: &Cx, error: &str, api_key: &str) -> Result<Response> {
-    view! { cx =>
+    let mut response = view! { cx =>
         document(
             title: "LeaseTrack — Reset API Key",
             body_class: "centered",
@@ -366,5 +375,13 @@ async fn reset_result_view(cx: &Cx, error: &str, api_key: &str) -> Result<Respon
             </div>
         )
     }?
-    .into_response(cx)
+    .into_response(cx)?;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    Ok(response)
 }
