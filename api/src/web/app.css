@@ -6,6 +6,12 @@
  */
 
 :root {
+  /* Tells the browser which scheme the page is painted in, so native UI —
+   * the date-picker glyph, number spinners, scrollbars, autofill — is drawn
+   * to match. Without it the UA assumes light and renders a dark calendar
+   * icon on our dark inputs, where it is all but invisible. */
+  color-scheme: light;
+
   --bg:          #ffffff;
   --bg-card:     #f6f8fa;
   --bg-panel:    #f6f8fa;
@@ -34,6 +40,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
+
     --bg:          #0d1117;
     --bg-card:     #161b22;
     --bg-panel:    #161b22;
@@ -129,6 +137,23 @@ input[type=text], input[type=password], input[type=number], input[type=date] {
 }
 
 input:focus { outline: none; border-color: var(--accent); }
+
+/* The calendar glyph is the only clickable part of a date field, but by
+ * default it is a bare icon with no affordance — easy to miss entirely. Give
+ * it a chip background and a hover state so it reads as a button. */
+input[type=date]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 1;
+  padding: 2px;
+  margin-left: 0.25rem;
+  border-radius: 4px;
+  background-color: var(--bg-bar);
+}
+
+input[type=date]::-webkit-calendar-picker-indicator:hover,
+input[type=date]::-webkit-calendar-picker-indicator:focus {
+  background-color: var(--bg-bar-fut);
+}
 
 button {
   width: 100%;
