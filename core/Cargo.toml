@@ -9,3 +9,9 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 sha2 = "0.11.0"
+
+# Integration tests see only the public API plus these; both are already
+# regular dependencies, so this pulls in nothing new.
+[dev-dependencies]
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
