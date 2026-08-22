@@ -31,6 +31,29 @@ environment variable.
 
 No async, no external services — pure local file I/O.
 
+### Tests
+
+The business logic lives here, so this is where the test suite is:
+
+```bash
+cargo test -p leasetrack-core   # this crate only
+cargo test --workspace          # everything, as CI runs it
+```
+
+| Suite | Covers |
+|---|---|
+| `tests/lease_math.rs` | date arithmetic, odometer interpolation, year stats and projections |
+| `tests/records.rs` | `add_record` — what is rejected, what warns, record ordering |
+| `tests/auth.rs` | key hashing, key matching, token generation, filename sanitising |
+| `tests/storage.rs` | file round-trips, users file, legacy key migration, reset tokens |
+
+`storage.rs` needs the filesystem and drives paths through environment
+variables. Cargo gives each integration test file its own binary, so it cannot
+disturb the other suites; inside it, a mutex serialises the tests and each one
+runs against its own temporary directory. Nothing touches `~/.config`.
+
+The other three suites are pure functions and run in parallel.
+
 ---
 
 ## cli
