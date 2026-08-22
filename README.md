@@ -131,7 +131,7 @@ The unauthenticated endpoints are capped in memory, per instance:
 | Endpoint | Limit |
 |---|---|
 | `POST /login` | 10 per 15 min, per client IP |
-| `POST /reset` | 10 per 15 min, per client IP (shared with sign-in attempts) |
+| `POST /reset` | 10 per 15 min, per client IP (counted separately from sign-in) |
 | `POST /register`, `POST /forgot` | 5 per hour, per client IP |
 | any mail to one address | 5 per hour, per email address |
 
@@ -139,6 +139,13 @@ The per-address cap is what stops a distributed flood of one person's inbox,
 which an IP limit alone cannot. Exceeding a limit returns `429` with a
 `Retry-After` header; `/forgot` and `/register` still render their normal
 success page so the cap cannot be used to probe which addresses are registered.
+
+**Each bucket is counted independently, and `/reset` must not be folded into
+the sign-in bucket.** Account recovery runs in a fixed order — a user who has
+forgotten their key fails sign-in several times first, and only then follows a
+reset link. A shared counter is therefore already exhausted by the time they
+press the confirm button, so it returns `429` to the one person it should let
+through. Brute force is not the concern: reset tokens are 256-bit random values.
 
 **Behind a proxy, set `TRUST_PROXY=1`.** Otherwise every request appears to
 come from the proxy and all clients share a single bucket — one abusive client
