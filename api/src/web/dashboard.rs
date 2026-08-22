@@ -1,8 +1,6 @@
 //! The main dashboard: lease info, odometer recording, projections and charts.
 
-use leasetrack_core::{
-    LeaseData, add_record, compute_report_data, load_user_data, save_user_data,
-};
+use leasetrack_core::{LeaseData, add_record, compute_report_data, load_user_data, save_user_data};
 use serde::Deserialize;
 use topcoat::{
     Result,
@@ -10,8 +8,8 @@ use topcoat::{
     router::{
         content::Form,
         error::see_other,
-        route,
         response::{IntoResponse, Response},
+        route,
     },
     view::{View, component, view},
 };
@@ -125,13 +123,7 @@ async fn web_config(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
         return render_dashboard(cx, &email, Some(e), None).await;
     }
 
-    render_dashboard(
-        cx,
-        &email,
-        None,
-        Some("Configuration saved.".to_string()),
-    )
-    .await
+    render_dashboard(cx, &email, None, Some("Configuration saved.".to_string())).await
 }
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
@@ -158,8 +150,7 @@ async fn render_dashboard(
         .map(|(i, rec)| RecordRow {
             date: rec.date.to_string(),
             odometer: rec.odometer,
-            delta: (i > 0)
-                .then(|| rec.odometer as i64 - data.records[i - 1].odometer as i64),
+            delta: (i > 0).then(|| rec.odometer as i64 - data.records[i - 1].odometer as i64),
         })
         .collect();
 

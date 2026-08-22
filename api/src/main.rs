@@ -1,20 +1,20 @@
-mod web;
 mod email;
 mod ratelimit;
+mod web;
 
 use axum::{
+    Router,
     body::Body,
     extract::{DefaultBodyLimit, Extension, Json},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Router,
 };
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
-    add_record, compute_report_data, compute_year_stats, find_user_by_key, load_data,
-    load_user_data, load_users, save_data, save_user_data, LeaseConfig, LeaseData,
+    LeaseConfig, LeaseData, add_record, compute_report_data, compute_year_stats, find_user_by_key,
+    load_data, load_user_data, load_users, save_data, save_user_data,
 };
 use serde::{Deserialize, Serialize};
 use topcoat::router::tower::TowerService;
@@ -172,7 +172,9 @@ async fn init(
         return Err(AppError("lease_years must be between 1 and 10".into()));
     }
     if req.allowed_km_per_year == 0 {
-        return Err(AppError("allowed_km_per_year must be greater than 0".into()));
+        return Err(AppError(
+            "allowed_km_per_year must be greater than 0".into(),
+        ));
     }
 
     let data = LeaseData {
@@ -307,7 +309,10 @@ async fn main() {
 
     tracing::info!("leasetrack-api listening on {}", addr);
     tracing::info!("Users file: {}", leasetrack_core::users_path().display());
-    if std::env::var("TRUST_PROXY").map(|v| matches!(v.as_str(), "1" | "true" | "yes")).unwrap_or(false) {
+    if std::env::var("TRUST_PROXY")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+    {
         tracing::info!("TRUST_PROXY enabled — rate limits key off X-Forwarded-For");
     } else {
         tracing::warn!(
@@ -322,7 +327,10 @@ async fn main() {
     }
     let users = leasetrack_core::load_users().unwrap_or_default();
     if !users.users.is_empty() {
-        tracing::info!("User authentication enabled ({} user(s))", users.users.len());
+        tracing::info!(
+            "User authentication enabled ({} user(s))",
+            users.users.len()
+        );
     } else if std::env::var("API_KEY").is_ok() {
         tracing::info!("API key authentication enabled (legacy API_KEY env var)");
     } else {

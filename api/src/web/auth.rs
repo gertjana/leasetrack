@@ -9,11 +9,12 @@ use topcoat::{
     Result,
     context::Cx,
     router::{
+        HeaderValue,
         content::Form,
         error::see_other,
-        header, HeaderValue,
-        query_params, route,
+        header, query_params,
         response::{IntoResponse, Response},
+        route,
     },
     session,
     view::view,
@@ -313,10 +314,9 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         )
     }?
     .into_response(cx)?;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
         .headers_mut()
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
@@ -376,10 +376,9 @@ async fn reset_result_view(cx: &Cx, error: &str, api_key: &str) -> Result<Respon
         )
     }?
     .into_response(cx)?;
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
         .headers_mut()
         .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));

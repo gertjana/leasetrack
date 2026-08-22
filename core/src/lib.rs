@@ -150,7 +150,13 @@ pub fn user_data_path(email: &str) -> PathBuf {
         .to_lowercase()
         .replace('@', "_at_")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     base.join(format!("leasetrack-{safe}.json"))
 }
@@ -163,8 +169,7 @@ pub fn load_user_data(email: &str) -> Result<LeaseData, String> {
             path.display()
         ));
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
@@ -200,8 +205,7 @@ pub fn load_data() -> Result<LeaseData, String> {
             path.display()
         ));
     }
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
@@ -227,7 +231,9 @@ pub fn users_path() -> PathBuf {
         return PathBuf::from(path);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config").join("leasetrack-users.json")
+    PathBuf::from(home)
+        .join(".config")
+        .join("leasetrack-users.json")
 }
 
 pub fn load_users() -> Result<UsersData, String> {
@@ -431,7 +437,7 @@ pub fn fmt_km(n: u32) -> String {
     let len = chars.len();
     let mut result = String::new();
     for (i, c) in chars.iter().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*c);
@@ -518,8 +524,7 @@ pub fn compute_year_stats(data: &LeaseData) -> Vec<YearStats> {
             let is_future = today < start;
             let is_current = !is_future && today < end;
 
-            let km_start =
-                km_at_date(&data.records, cfg.start_odometer, cfg.lease_start, start);
+            let km_start = km_at_date(&data.records, cfg.start_odometer, cfg.lease_start, start);
             let effective_end = if is_current { today } else { end };
             let km_end = if is_future {
                 None

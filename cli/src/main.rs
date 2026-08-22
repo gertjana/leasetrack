@@ -1,8 +1,8 @@
 use chrono::{Duration, Local, NaiveDate};
 use clap::{Parser, Subcommand};
 use leasetrack_core::{
-    add_record, add_years, compute_report_data, compute_year_stats, config_path, fmt_km, fmt_km_f,
-    load_data, save_data, LeaseConfig, LeaseData,
+    LeaseConfig, LeaseData, add_record, add_years, compute_report_data, compute_year_stats,
+    config_path, fmt_km, fmt_km_f, load_data, save_data,
 };
 use std::io::{self, Write};
 
@@ -152,8 +152,7 @@ fn cmd_record(odometer: u32, date_str: Option<String>) -> Result<(), String> {
     let km_since = data
         .records
         .iter()
-        .filter(|r| r.date < date)
-        .last()
+        .rfind(|r| r.date < date)
         .map(|prev| {
             format!(
                 " (+{} km since {})",
@@ -194,8 +193,8 @@ fn cmd_report(data: &leasetrack_core::LeaseData) -> Result<(), String> {
     let line = "─".repeat(76);
     println!("{}", line);
     println!(
-        " {:>4}  {:<24}  {:>9}  {:>9}  {:>10}  {}",
-        "Year", "Period", "Driven", "Allowed", "Difference", ""
+        " {:>4}  {:<24}  {:>9}  {:>9}  {:>10}  ",
+        "Year", "Period", "Driven", "Allowed", "Difference"
     );
     println!("{}", line);
 
@@ -298,8 +297,7 @@ fn cmd_report(data: &leasetrack_core::LeaseData) -> Result<(), String> {
     }
 
     // End-of-lease total projection
-    if let (Some(avg_rate), Some(projected_total)) =
-        (report.avg_daily_rate, report.projected_total)
+    if let (Some(avg_rate), Some(projected_total)) = (report.avg_daily_rate, report.projected_total)
     {
         let proj_diff = projected_total - report.km_allowed_total as f64;
         let (diff_label, icon) = if proj_diff.abs() < 1.0 {
@@ -412,20 +410,14 @@ fn render_bar(km: f64, allowed: f64, scale: f64, width: usize) -> String {
 
     let mut bar: Vec<char> = vec![' '; width];
 
+    // Both branches are clamped to `width` above, and each pair is ordered by
+    // the `km <= allowed` test, so every range below is valid.
     if km <= allowed {
-        for i in 0..driven_w {
-            bar[i] = '█';
-        }
-        for i in driven_w..allowed_w {
-            bar[i] = '░';
-        }
+        bar[..driven_w].fill('█');
+        bar[driven_w..allowed_w].fill('░');
     } else {
-        for i in 0..allowed_w {
-            bar[i] = '█';
-        }
-        for i in allowed_w..driven_w {
-            bar[i] = '▓';
-        }
+        bar[..allowed_w].fill('█');
+        bar[allowed_w..driven_w].fill('▓');
     }
 
     bar.into_iter().collect()
