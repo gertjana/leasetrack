@@ -34,6 +34,17 @@ impl Quota {
 /// Sign-in attempts per IP. Generous enough for a fat-fingered human, far too
 /// tight to work through a keyspace.
 pub const LOGIN_PER_IP: Quota = Quota::new(10, 15 * 60);
+/// Reset-link redemptions per IP.
+///
+/// Deliberately its own bucket rather than sharing the sign-in one. Account
+/// recovery runs in a fixed order: someone who has forgotten their key fails
+/// sign-in several times *first*, and only then requests and follows a reset
+/// link. A shared counter is therefore already spent by the time the confirm
+/// button is pressed, and returns 429 to the one person it should let through.
+///
+/// Brute force is not the threat model here: reset tokens are 256-bit random
+/// values, so this quota exists to bound abuse, not to protect the token.
+pub const RESET_PER_IP: Quota = Quota::new(10, 15 * 60);
 /// Account creation / reset requests per IP.
 pub const EMAIL_PER_IP: Quota = Quota::new(5, 60 * 60);
 /// Messages any single address can be made to receive, regardless of source.
