@@ -34,13 +34,6 @@ impl Quota {
 /// Sign-in attempts per IP. Generous enough for a fat-fingered human, far too
 /// tight to work through a keyspace.
 pub const LOGIN_PER_IP: Quota = Quota::new(10, 15 * 60);
-/// Reset-link redemptions per IP.
-///
-/// Deliberately its own bucket rather than sharing the sign-in one: someone who
-/// has forgotten their key burns sign-in attempts first and only then follows a
-/// reset link, so a shared counter would lock them out of recovery at exactly
-/// the moment they need it.
-pub const RESET_PER_IP: Quota = Quota::new(10, 15 * 60);
 /// Account creation / reset requests per IP.
 pub const EMAIL_PER_IP: Quota = Quota::new(5, 60 * 60);
 /// Messages any single address can be made to receive, regardless of source.
