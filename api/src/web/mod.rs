@@ -128,9 +128,8 @@ async fn dashboard_js(cx: &Cx) -> Result<Response> {
 /// Per-IP limits on the unauthenticated endpoints.
 ///
 /// GET requests pass through untouched so that merely loading a page does not
-/// consume anyone's quota. `/login` is bucketed separately from the
-/// mail-sending endpoints so that a burst of sign-in attempts cannot exhaust
-/// someone's ability to request a reset.
+/// consume anyone's quota. Sign-in and reset redemptions share a bucket, while
+/// mail-sending endpoints are separate.
 #[layer("/")]
 async fn rate_limit(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
     if method(cx) != topcoat::router::Method::POST {
@@ -140,6 +139,7 @@ async fn rate_limit(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
     let path = topcoat::router::request::uri(cx).path().to_owned();
     let bucketed = match path.as_str() {
         "/login" => Some(("login", ratelimit::LOGIN_PER_IP)),
+        "/reset" => Some(("login", ratelimit::LOGIN_PER_IP)),
         "/register" | "/forgot" => Some(("email", ratelimit::EMAIL_PER_IP)),
         _ => None,
     };
