@@ -8,8 +8,8 @@ use topcoat::{
     router::{
         content::Form,
         error::see_other,
-        route,
         response::{IntoResponse, Response},
+        route,
     },
     view::view,
 };

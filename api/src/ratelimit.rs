@@ -27,7 +27,10 @@ pub struct Quota {
 
 impl Quota {
     pub const fn new(max: u32, window_secs: u64) -> Self {
-        Quota { max, window: Duration::from_secs(window_secs) }
+        Quota {
+            max,
+            window: Duration::from_secs(window_secs),
+        }
     }
 }
 
@@ -64,7 +67,9 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        RateLimiter { windows: Arc::new(Mutex::new(HashMap::new())) }
+        RateLimiter {
+            windows: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Record a hit against `key`. Returns `Err(retry_after_secs)` when the
@@ -89,7 +94,11 @@ impl RateLimiter {
             _ => {
                 windows.insert(
                     key.to_string(),
-                    Window { hits: 1, started: now, window: quota.window },
+                    Window {
+                        hits: 1,
+                        started: now,
+                        window: quota.window,
+                    },
                 );
                 Ok(())
             }
@@ -116,14 +125,12 @@ pub fn client_key_from(headers: &HeaderMap, extensions: &Extensions) -> String {
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
 
-    if trust_proxy {
-        if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            if let Some(ip) = forwarded.rsplit(',').next().map(str::trim) {
-                if !ip.is_empty() {
-                    return ip.to_string();
-                }
-            }
-        }
+    if trust_proxy
+        && let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(ip) = forwarded.rsplit(',').next().map(str::trim)
+        && !ip.is_empty()
+    {
+        return ip.to_string();
     }
 
     extensions
@@ -135,7 +142,10 @@ pub fn client_key_from(headers: &HeaderMap, extensions: &Extensions) -> String {
 /// Check the per-address quota. Called from the handlers, which have already
 /// parsed the form and therefore know the target address.
 pub fn check_email_quota(limiter: &RateLimiter, email: &str) -> Result<(), u64> {
-    limiter.check(&format!("email:{}", email.trim().to_lowercase()), EMAIL_PER_ADDRESS)
+    limiter.check(
+        &format!("email:{}", email.trim().to_lowercase()),
+        EMAIL_PER_ADDRESS,
+    )
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

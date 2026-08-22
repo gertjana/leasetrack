@@ -15,11 +15,12 @@ use topcoat::{
     context::{Cx, app_context},
     cookie::RouterBuilderCookieExt,
     router::{
-        Body, HeaderValue, Next, Router, RouterBuilderDiscoverExt, StatusCode, header,
+        Body, HeaderValue, Next, Router, RouterBuilderDiscoverExt, StatusCode,
         content::{Css, Js},
-        response::{IntoResponse, Response},
-        layer, route,
+        header, layer,
         request::{extensions, headers, method},
+        response::{IntoResponse, Response},
+        route,
     },
     session::{self, RouterBuilderSessionExt, SessionConfig},
     view::view,
@@ -229,10 +230,11 @@ mod tests {
         assert_eq!(bucket_for("/login").unwrap().1.max, ratelimit::LOGIN_PER_IP.max);
         assert_eq!(bucket_for("/reset").unwrap().1.max, ratelimit::RESET_PER_IP.max);
         assert_eq!(bucket_for("/register").unwrap().1.max, ratelimit::EMAIL_PER_IP.max);
-
-        // Mail is the scarcer resource, so its budget is tighter than sign-in's.
-        assert!(ratelimit::EMAIL_PER_IP.max < ratelimit::LOGIN_PER_IP.max);
     }
+
+    /// Mail is the scarcer resource, so its budget is tighter than sign-in's.
+    /// Both are constants, so this is checked at compile time.
+    const _: () = assert!(ratelimit::EMAIL_PER_IP.max < ratelimit::LOGIN_PER_IP.max);
 
     #[test]
     fn everything_else_is_unlimited() {

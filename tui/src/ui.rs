@@ -119,7 +119,10 @@ fn draw_car_info(f: &mut Frame, app: &App, area: Rect) {
             area,
         );
     } else {
-        let msg = app.error_msg.as_deref().unwrap_or("No data — check API key");
+        let msg = app
+            .error_msg
+            .as_deref()
+            .unwrap_or("No data — check API key");
         f.render_widget(
             Paragraph::new(format!("  {}", msg))
                 .block(block)
@@ -144,7 +147,9 @@ fn draw_graph(f: &mut Frame, app: &App, area: Rect) {
         let yr_width = report.years.len().to_string().len(); // digits in max year number
 
         // Pre-compute km strings to find max width for right-alignment
-        let km_strs: Vec<String> = report.years.iter()
+        let km_strs: Vec<String> = report
+            .years
+            .iter()
             .map(|y| fmt_km_f(y.km_driven.unwrap_or(0.0)))
             .collect();
         let km_width = km_strs.iter().map(|s| s.len()).max().unwrap_or(6);
@@ -210,11 +215,18 @@ fn draw_projections(f: &mut Frame, app: &App, area: Rect) {
     if let Some(report) = &app.report {
         // Current year projection
         if let Some(proj) = &report.current_year {
-            let diff_color = if proj.projected_diff > 0.0 { Color::Red } else { Color::Green };
+            let diff_color = if proj.projected_diff > 0.0 {
+                Color::Red
+            } else {
+                Color::Green
+            };
             let sign = if proj.projected_diff > 0.0 { "+" } else { "" };
             lines.push(Line::from(vec![
                 Span::styled(" End yr ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}", proj.year_num), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{}", proj.year_num),
+                    Style::default().fg(Color::Yellow),
+                ),
                 Span::styled(":  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!("{} km", fmt_km_f(proj.projected_year_total)),
@@ -261,7 +273,7 @@ fn draw_records(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(list) = &app.list {
         let mut records = list.records.clone();
-        records.sort_by(|a, b| b.date.cmp(&a.date)); // newest first
+        records.sort_by_key(|r| std::cmp::Reverse(r.date)); // newest first
 
         let items: Vec<ListItem> = records
             .iter()
@@ -283,10 +295,7 @@ fn draw_records(f: &mut Frame, app: &App, area: Rect) {
                         format!("{:>9}  ", fmt_km(r.odometer)),
                         Style::default().fg(Color::Reset),
                     ),
-                    Span::styled(
-                        format!("{:>8}", delta),
-                        Style::default().fg(Color::Green),
-                    ),
+                    Span::styled(format!("{:>8}", delta), Style::default().fg(Color::Green)),
                 ]))
             })
             .collect();
@@ -302,7 +311,9 @@ fn draw_records(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  Date          Odometer      Delta",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ))),
             rows[0],
         );
@@ -351,12 +362,24 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 
     let hints = Line::from(vec![
         Span::styled(" leasetrack-tui  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[r]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[r]",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" record  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[q]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[q]",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" quit", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            if status_text.is_empty() { "".to_string() } else { format!("   {}", status_text) },
+            if status_text.is_empty() {
+                "".to_string()
+            } else {
+                format!("   {}", status_text)
+            },
             status_style,
         ),
     ]);
@@ -393,7 +416,9 @@ fn draw_record_popup(f: &mut Frame, app: &App) {
     // Odometer field
     let odo_focused = input.focused_field == 0;
     let odo_style = if odo_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Reset)
     };
@@ -401,7 +426,11 @@ fn draw_record_popup(f: &mut Frame, app: &App) {
         Paragraph::new(Line::from(vec![
             Span::styled("  Odometer: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("[{}{}]", input.odometer, if odo_focused { "█" } else { " " }),
+                format!(
+                    "[{}{}]",
+                    input.odometer,
+                    if odo_focused { "█" } else { " " }
+                ),
                 odo_style,
             ),
         ])),
@@ -411,7 +440,9 @@ fn draw_record_popup(f: &mut Frame, app: &App) {
     // Date field
     let date_focused = input.focused_field == 1;
     let date_style = if date_focused {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Reset)
     };

@@ -38,7 +38,11 @@ async fn handle_record_popup(app: &mut App, key: KeyEvent) {
             app.record_input.focused_field = (app.record_input.focused_field + 1) % 2;
         }
         KeyCode::BackTab => {
-            app.record_input.focused_field = if app.record_input.focused_field == 0 { 1 } else { 0 };
+            app.record_input.focused_field = if app.record_input.focused_field == 0 {
+                1
+            } else {
+                0
+            };
         }
         KeyCode::Enter => {
             app.submit_record().await;
