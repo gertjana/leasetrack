@@ -143,3 +143,162 @@ async fn setup_post(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
 
     see_other("/dashboard").into_response(cx)
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::{ConfigForm, parse_config};
+
+    /// A form that passes validation; individual tests override one field.
+    fn form() -> ConfigForm {
+        ConfigForm {
+            car_name: "Tesla Model 3".to_string(),
+            lease_start: "2025-01-01".to_string(),
+            lease_years: "3".to_string(),
+            allowed_km_per_year: "20000".to_string(),
+            start_odometer: "100".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_valid_form_is_accepted() {
+        let config = parse_config(&form()).expect("accepted");
+
+        assert_eq!(config.car_name, "Tesla Model 3");
+        assert_eq!(config.lease_years, 3);
+        assert_eq!(config.allowed_km_per_year, 20_000);
+        assert_eq!(config.start_odometer, 100);
+        assert_eq!(config.lease_start.to_string(), "2025-01-01");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_trimmed() {
+        let mut f = form();
+        f.car_name = "  Tesla Model 3  ".to_string();
+        f.lease_start = " 2025-01-01 ".to_string();
+        f.lease_years = " 3 ".to_string();
+        f.allowed_km_per_year = " 20000 ".to_string();
+        f.start_odometer = " 100 ".to_string();
+
+        let config = parse_config(&f).expect("accepted");
+        assert_eq!(config.car_name, "Tesla Model 3");
+        assert_eq!(config.lease_years, 3);
+        assert_eq!(config.start_odometer, 100);
+    }
+
+    // ─── Dates ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_start_date_must_be_iso_formatted() {
+        for bad in ["01-01-2025", "2025/01/01", "tomorrow", "", "2025-13-01", "2025-02-30"] {
+            let mut f = form();
+            f.lease_start = bad.to_string();
+
+            let error = parse_config(&f).expect_err("rejected");
+            assert!(error.contains("lease start date"), "{bad} gave: {error}");
+        }
+    }
+
+    #[test]
+    fn a_leap_day_start_is_accepted() {
+        let mut f = form();
+        f.lease_start = "2024-02-29".to_string();
+
+        assert!(parse_config(&f).is_ok());
+    }
+
+    // ─── Duration ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_lease_runs_between_one_and_ten_years() {
+        for good in ["1", "5", "10"] {
+            let mut f = form();
+            f.lease_years = good.to_string();
+            assert!(parse_config(&f).is_ok(), "{good} years should be allowed");
+        }
+
+        for bad in ["0", "11", "-1", "abc", "", "3.5"] {
+            let mut f = form();
+            f.lease_years = bad.to_string();
+
+            let error = parse_config(&f).expect_err("rejected");
+            assert!(error.contains("between 1 and 10"), "{bad} gave: {error}");
+        }
+    }
+
+    // ─── Allowance ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_annual_allowance_must_be_positive() {
+        for bad in ["0", "-100", "abc", "", "20,000"] {
+            let mut f = form();
+            f.allowed_km_per_year = bad.to_string();
+
+            let error = parse_config(&f).expect_err("rejected");
+            assert!(error.contains("greater than 0"), "{bad} gave: {error}");
+        }
+    }
+
+    // ─── Start odometer ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_start_odometer_of_zero_is_valid() {
+        let mut f = form();
+        f.start_odometer = "0".to_string();
+
+        assert_eq!(parse_config(&f).expect("accepted").start_odometer, 0);
+    }
+
+    /// This previously fell back to 0 on any parse error, silently discarding a
+    /// mistyped reading and skewing every total derived from it.
+    #[test]
+    fn a_non_numeric_start_odometer_is_rejected_rather_than_defaulted() {
+        for bad in ["abc", "", "-5", "12.5", "1 000"] {
+            let mut f = form();
+            f.start_odometer = bad.to_string();
+
+            let error = parse_config(&f).expect_err("rejected");
+            assert!(error.contains("Start odometer"), "{bad} gave: {error}");
+        }
+    }
+
+    // ─── Car name ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn the_car_name_must_not_be_empty() {
+        for bad in ["", "   "] {
+            let mut f = form();
+            f.car_name = bad.to_string();
+
+            let error = parse_config(&f).expect_err("rejected");
+            assert!(error.contains("Car name"), "got: {error}");
+        }
+    }
+
+    #[test]
+    fn the_car_name_is_capped_at_100_characters() {
+        let mut f = form();
+        f.car_name = "x".repeat(100);
+        assert!(parse_config(&f).is_ok(), "100 characters is the limit, inclusive");
+
+        f.car_name = "x".repeat(101);
+        let error = parse_config(&f).expect_err("rejected");
+        assert!(error.contains("Car name"), "got: {error}");
+    }
+
+    // ─── Ordering ─────────────────────────────────────────────────────────────
+
+    /// Fields are checked in a fixed order, so a form with several problems
+    /// reports the first one rather than a confusing mixture.
+    #[test]
+    fn the_first_problem_is_reported() {
+        let mut f = form();
+        f.lease_start = "nonsense".to_string();
+        f.lease_years = "99".to_string();
+        f.car_name = String::new();
+
+        let error = parse_config(&f).expect_err("rejected");
+        assert!(error.contains("lease start date"), "got: {error}");
+    }
+}

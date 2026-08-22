@@ -125,12 +125,25 @@ async fn dashboard_js(cx: &Cx) -> Result<Response> {
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 
+/// Which quota bucket a POST to `path` is counted against, if any.
+///
+/// Buckets are deliberately independent: exhausting one must not deny access
+/// to another. In particular `/reset` is counted separately from `/login`,
+/// because a user recovering an account has usually just spent their sign-in
+/// attempts failing, and a shared counter would reject the reset they came for.
+fn bucket_for(path: &str) -> Option<(&'static str, ratelimit::Quota)> {
+    match path {
+        "/login" => Some(("login", ratelimit::LOGIN_PER_IP)),
+        "/reset" => Some(("reset", ratelimit::RESET_PER_IP)),
+        "/register" | "/forgot" => Some(("email", ratelimit::EMAIL_PER_IP)),
+        _ => None,
+    }
+}
+
 /// Per-IP limits on the unauthenticated endpoints.
 ///
 /// GET requests pass through untouched so that merely loading a page does not
-/// consume anyone's quota. Each bucket is counted independently, so exhausting
-/// one cannot deny access to another — in particular, failed sign-ins must not
-/// be able to block the account recovery that follows them.
+/// consume anyone's quota.
 #[layer("/")]
 async fn rate_limit(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
     if method(cx) != topcoat::router::Method::POST {
@@ -138,17 +151,8 @@ async fn rate_limit(cx: &Cx, body: Body, next: Next<'_>) -> Result<Response> {
     }
 
     let path = topcoat::router::request::uri(cx).path().to_owned();
-    let bucketed = match path.as_str() {
-        "/login" => Some(("login", ratelimit::LOGIN_PER_IP)),
-        // Separate from sign-in on purpose: a user recovering an account has
-        // usually just spent their sign-in attempts failing, so a shared
-        // counter would reject the reset they came for.
-        "/reset" => Some(("reset", ratelimit::RESET_PER_IP)),
-        "/register" | "/forgot" => Some(("email", ratelimit::EMAIL_PER_IP)),
-        _ => None,
-    };
 
-    let Some((bucket, quota)) = bucketed else {
+    let Some((bucket, quota)) = bucket_for(&path) else {
         return next.run(cx, body).await;
     };
 
@@ -183,4 +187,70 @@ async fn too_many_requests(cx: &Cx, retry_after: u64) -> Result<Response> {
         )
     }?
     .into_response(cx)
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::bucket_for;
+    use crate::ratelimit;
+
+    #[test]
+    fn the_unauthenticated_endpoints_are_bucketed() {
+        assert_eq!(bucket_for("/login").unwrap().0, "login");
+        assert_eq!(bucket_for("/reset").unwrap().0, "reset");
+        assert_eq!(bucket_for("/register").unwrap().0, "email");
+        assert_eq!(bucket_for("/forgot").unwrap().0, "email");
+    }
+
+    /// The regression this guards: folding `/reset` into the sign-in bucket
+    /// means a user who has just failed several sign-ins — the normal
+    /// precondition for using a reset link — is refused the reset itself.
+    #[test]
+    fn sign_in_and_reset_are_counted_separately() {
+        let login = bucket_for("/login").expect("bucketed");
+        let reset = bucket_for("/reset").expect("bucketed");
+
+        assert_ne!(
+            login.0, reset.0,
+            "sharing a bucket blocks account recovery after failed sign-ins"
+        );
+    }
+
+    #[test]
+    fn account_creation_and_reset_requests_share_the_mail_bucket() {
+        // Both send mail, so one budget covers them jointly.
+        assert_eq!(bucket_for("/register").unwrap().0, bucket_for("/forgot").unwrap().0);
+    }
+
+    #[test]
+    fn each_endpoint_uses_its_documented_quota() {
+        assert_eq!(bucket_for("/login").unwrap().1.max, ratelimit::LOGIN_PER_IP.max);
+        assert_eq!(bucket_for("/reset").unwrap().1.max, ratelimit::RESET_PER_IP.max);
+        assert_eq!(bucket_for("/register").unwrap().1.max, ratelimit::EMAIL_PER_IP.max);
+
+        // Mail is the scarcer resource, so its budget is tighter than sign-in's.
+        assert!(ratelimit::EMAIL_PER_IP.max < ratelimit::LOGIN_PER_IP.max);
+    }
+
+    #[test]
+    fn everything_else_is_unlimited() {
+        for path in [
+            "/",
+            "/dashboard",
+            "/setup",
+            "/logout",
+            "/web/record",
+            "/web/config",
+            "/assets/app.css",
+            "/health",
+            "/report",
+            "/login/",
+            "/Login",
+            "/login/extra",
+        ] {
+            assert!(bucket_for(path).is_none(), "{path} should not be limited");
+        }
+    }
 }
