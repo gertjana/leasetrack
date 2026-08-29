@@ -27,6 +27,26 @@ pub struct LeaseData {
     pub records: Vec<KmRecord>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LeaseCar {
+    pub id: String,
+    #[serde(flatten)]
+    pub data: LeaseData,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserLeaseData {
+    pub active_car_id: String,
+    pub cars: Vec<LeaseCar>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StoredUserLeaseData {
+    Multiple(UserLeaseData),
+    Single(LeaseData),
+}
+
 // ─── User / Auth Structures ───────────────────────────────────────────────────
 
 /// A single registered user.
@@ -162,30 +182,135 @@ pub fn user_data_path(email: &str) -> PathBuf {
 }
 
 pub fn load_user_data(email: &str) -> Result<LeaseData, String> {
+    let leases = load_user_leases(email)?;
+    leases
+        .cars
+        .iter()
+        .find(|car| car.id == leases.active_car_id)
+        .map(|car| car.data.clone())
+        .ok_or_else(|| "The active lease car does not exist.".to_string())
+}
+
+pub fn save_user_data(email: &str, data: &LeaseData) -> Result<(), String> {
     let path = user_data_path(email);
+    if path.exists() {
+        match read_stored_user_data(&path)? {
+            StoredUserLeaseData::Multiple(mut leases) => {
+                let car = leases
+                    .cars
+                    .iter_mut()
+                    .find(|car| car.id == leases.active_car_id)
+                    .ok_or_else(|| "The active lease car does not exist.".to_string())?;
+                car.data = data.clone();
+                return save_user_leases(email, &leases);
+            }
+            StoredUserLeaseData::Single(_) => {}
+        }
+    }
+    write_user_data(&path, data)
+}
+
+pub fn load_user_leases(email: &str) -> Result<UserLeaseData, String> {
+    match read_stored_user_data(&user_data_path(email))? {
+        StoredUserLeaseData::Multiple(leases) => {
+            validate_user_leases(&leases)?;
+            Ok(leases)
+        }
+        StoredUserLeaseData::Single(data) => Ok(UserLeaseData {
+            active_car_id: "car-1".to_string(),
+            cars: vec![LeaseCar {
+                id: "car-1".to_string(),
+                data,
+            }],
+        }),
+    }
+}
+
+pub fn load_user_car(email: &str, car_id: &str) -> Result<LeaseData, String> {
+    load_user_leases(email)?
+        .cars
+        .into_iter()
+        .find(|car| car.id == car_id)
+        .map(|car| car.data)
+        .ok_or_else(|| "Lease car not found.".to_string())
+}
+
+pub fn save_user_car(email: &str, car_id: &str, data: &LeaseData) -> Result<(), String> {
+    let mut leases = load_user_leases(email)?;
+    let car = leases
+        .cars
+        .iter_mut()
+        .find(|car| car.id == car_id)
+        .ok_or_else(|| "Lease car not found.".to_string())?;
+    car.data = data.clone();
+    leases.active_car_id = car_id.to_string();
+    save_user_leases(email, &leases)
+}
+
+pub fn add_user_car(email: &str, data: LeaseData) -> Result<String, String> {
+    let mut leases = load_user_leases(email)?;
+    let id = loop {
+        let candidate = format!("car-{}", &generate_token()[..12]);
+        if !leases.cars.iter().any(|car| car.id == candidate) {
+            break candidate;
+        }
+    };
+    leases.cars.push(LeaseCar {
+        id: id.clone(),
+        data,
+    });
+    leases.active_car_id = id.clone();
+    save_user_leases(email, &leases)?;
+    Ok(id)
+}
+
+pub fn select_user_car(email: &str, car_id: &str) -> Result<(), String> {
+    let mut leases = load_user_leases(email)?;
+    if !leases.cars.iter().any(|car| car.id == car_id) {
+        return Err("Lease car not found.".to_string());
+    }
+    leases.active_car_id = car_id.to_string();
+    save_user_leases(email, &leases)
+}
+
+fn validate_user_leases(leases: &UserLeaseData) -> Result<(), String> {
+    if leases.cars.is_empty() {
+        return Err("No lease cars found. Configure your lease first.".to_string());
+    }
+    if !leases.cars.iter().any(|car| car.id == leases.active_car_id) {
+        return Err("The active lease car does not exist.".to_string());
+    }
+    Ok(())
+}
+
+fn save_user_leases(email: &str, leases: &UserLeaseData) -> Result<(), String> {
+    validate_user_leases(leases)?;
+    write_user_data(&user_data_path(email), leases)
+}
+
+fn read_stored_user_data(path: &PathBuf) -> Result<StoredUserLeaseData, String> {
     if !path.exists() {
         return Err(format!(
             "No lease data found. Configure your lease first.\nConfig file: {}",
             path.display()
         ));
     }
-    let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {}", e))?;
+    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read config: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))
 }
 
-pub fn save_user_data(email: &str, data: &LeaseData) -> Result<(), String> {
-    let path = user_data_path(email);
+fn write_user_data(path: &PathBuf, data: &impl Serialize) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
     if path.exists() {
         let backup = path.with_extension("json.backup");
-        fs::copy(&path, &backup).map_err(|e| format!("Failed to write backup: {}", e))?;
+        fs::copy(path, &backup).map_err(|e| format!("Failed to write backup: {}", e))?;
     }
     let content =
         serde_json::to_string_pretty(data).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write config: {}", e))
+    fs::write(path, content).map_err(|e| format!("Failed to write config: {}", e))
 }
 
 /// Returns the data file path. Override with `LEASETRACK_DATA_FILE` env var.

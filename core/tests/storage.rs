@@ -10,9 +10,10 @@ use std::sync::Mutex;
 
 use chrono::{Local, NaiveDate};
 use leasetrack_core::{
-    KmRecord, LeaseConfig, LeaseData, RESET_TOKEN_TTL_SECS, User, UsersData, authenticate_user,
-    find_user_by_key, hash_key, issue_reset_token, load_user_data, load_users,
-    migrate_users_to_hashed_keys, redeem_reset_token, save_user_data, save_users,
+    KmRecord, LeaseConfig, LeaseData, RESET_TOKEN_TTL_SECS, User, UsersData, add_user_car,
+    authenticate_user, find_user_by_key, hash_key, issue_reset_token, load_user_car,
+    load_user_data, load_user_leases, load_users, migrate_users_to_hashed_keys, redeem_reset_token,
+    save_user_car, save_user_data, save_users, select_user_car,
 };
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -84,6 +85,74 @@ fn lease_data_survives_a_save_and_load() {
         assert_eq!(loaded.config.start_odometer, 1_000);
         assert_eq!(loaded.records.len(), 2);
         assert_eq!(loaded.records[1].odometer, 12_000);
+    });
+}
+
+#[test]
+fn legacy_single_car_data_is_exposed_as_a_fleet() {
+    with_env(|_| {
+        save_user_data("user@example.com", &sample_data()).expect("saved");
+
+        let leases = load_user_leases("user@example.com").expect("loaded");
+
+        assert_eq!(leases.active_car_id, "car-1");
+        assert_eq!(leases.cars.len(), 1);
+        assert_eq!(leases.cars[0].data.config.car_name, "Test Car");
+    });
+}
+
+#[test]
+fn multiple_cars_keep_separate_config_and_records() {
+    with_env(|_| {
+        save_user_data("user@example.com", &sample_data()).expect("saved");
+        let mut second = sample_data();
+        second.config.car_name = "Second Car".to_string();
+        second.records.clear();
+
+        let second_id = add_user_car("user@example.com", second).expect("car added");
+        let mut first = load_user_car("user@example.com", "car-1").expect("first car");
+        first.records.push(KmRecord {
+            date: date("2025-07-01"),
+            odometer: 15_000,
+        });
+        save_user_car("user@example.com", "car-1", &first).expect("first car updated");
+
+        assert_eq!(
+            load_user_car("user@example.com", &second_id)
+                .unwrap()
+                .records
+                .len(),
+            0
+        );
+        assert_eq!(
+            load_user_car("user@example.com", "car-1")
+                .unwrap()
+                .records
+                .len(),
+            3
+        );
+    });
+}
+
+#[test]
+fn selecting_a_car_changes_the_legacy_active_car_view() {
+    with_env(|_| {
+        save_user_data("user@example.com", &sample_data()).expect("saved");
+        let mut second = sample_data();
+        second.config.car_name = "Second Car".to_string();
+        let second_id = add_user_car("user@example.com", second).expect("car added");
+
+        assert_eq!(
+            load_user_data("user@example.com").unwrap().config.car_name,
+            "Second Car"
+        );
+        select_user_car("user@example.com", "car-1").expect("selected");
+        assert_eq!(
+            load_user_data("user@example.com").unwrap().config.car_name,
+            "Test Car"
+        );
+        assert!(select_user_car("user@example.com", "missing").is_err());
+        assert_ne!(second_id, "car-1");
     });
 }
 

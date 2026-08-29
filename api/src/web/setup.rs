@@ -1,6 +1,6 @@
 //! First-time lease configuration.
 
-use leasetrack_core::{LeaseConfig, LeaseData, load_user_data, save_user_data};
+use leasetrack_core::{LeaseConfig, LeaseData, add_user_car, load_user_data, save_user_data};
 use serde::Deserialize;
 use topcoat::{
     Result,
@@ -8,6 +8,7 @@ use topcoat::{
     router::{
         content::Form,
         error::see_other,
+        query_params,
         response::{IntoResponse, Response},
         route,
     },
@@ -69,20 +70,23 @@ fn today() -> String {
     chrono::Local::now().date_naive().to_string()
 }
 
-async fn setup_view(cx: &Cx, error: &str) -> Result<Response> {
+async fn setup_view(cx: &Cx, error: &str, adding_car: bool) -> Result<Response> {
     let today = today();
+    let action = if adding_car { "/web/car" } else { "/setup" };
     view! { cx =>
         document(
-            title: "LeaseTrack — Setup",
+            title: if adding_car { "LeaseTrack — Add car" } else { "LeaseTrack — Setup" },
             body_class: "centered",
             script: Some("/assets/setup.js"),
             <div class="card card-wider">
                 <h1>"LeaseTrack"</h1>
-                <p class="subtitle">"Let's set up your lease"</p>
+                <p class="subtitle">
+                    if adding_car { "Add another lease car" } else { "Let's set up your lease" }
+                </p>
                 if !error.is_empty() {
                     <div class="error">(error)</div>
                 }
-                <form method="post" action="/setup" class="setup-form">
+                <form method="post" action=(action) class="setup-form">
                     <label for="car_name">"Car name"</label>
                     <input type="text" id="car_name" name="car_name" placeholder="e.g. Tesla Model 3" maxlength="100" required="" autofocus="">
 
@@ -99,12 +103,23 @@ async fn setup_view(cx: &Cx, error: &str) -> Result<Response> {
                     <label for="start_odometer">"Start odometer (km)"</label>
                     <input type="number" id="start_odometer" name="start_odometer" value="0" min="0" required="">
 
-                    <button type="submit">"Start tracking"</button>
+                    <button type="submit">
+                        if adding_car { "Add car" } else { "Start tracking" }
+                    </button>
                 </form>
+                if adding_car {
+                    <a class="back" href="/dashboard">"Cancel"</a>
+                }
             </div>
         )
     }?
     .into_response(cx)
+}
+
+#[query_params]
+struct SetupQuery {
+    #[serde(default, rename = "new")]
+    add_car: bool,
 }
 
 /// `GET /setup` — initial lease configuration for new users.
@@ -113,11 +128,15 @@ async fn setup_page(cx: &Cx) -> Result<Response> {
     let Some(email) = current_email(cx).await? else {
         return see_other("/login").into_response(cx);
     };
-    // If already set up, go straight to the dashboard.
-    if load_user_data(&email).is_ok() {
+    let requested_add = query_params::<SetupQuery>(cx)
+        .map(|query| query.add_car)
+        .unwrap_or(false);
+    let has_lease = load_user_data(&email).is_ok();
+    // Existing users only stay on setup when they explicitly add another car.
+    if has_lease && !requested_add {
         return see_other("/dashboard").into_response(cx);
     }
-    setup_view(cx, "").await
+    setup_view(cx, "", has_lease && requested_add).await
 }
 
 /// `POST /setup`
@@ -129,7 +148,7 @@ async fn setup_post(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
 
     let config = match parse_config(&form) {
         Ok(config) => config,
-        Err(message) => return setup_view(cx, &message).await,
+        Err(message) => return setup_view(cx, &message, false).await,
     };
 
     let data = LeaseData {
@@ -138,10 +157,32 @@ async fn setup_post(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
     };
 
     if let Err(e) = save_user_data(&email, &data) {
-        return setup_view(cx, &e).await;
+        return setup_view(cx, &e, false).await;
     }
 
     see_other("/dashboard").into_response(cx)
+}
+
+/// `POST /web/car` — append a car to an existing account.
+#[route(POST "/web/car")]
+async fn add_car(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
+    let Some(email) = current_email(cx).await? else {
+        return see_other("/login").into_response(cx);
+    };
+
+    let config = match parse_config(&form) {
+        Ok(config) => config,
+        Err(message) => return setup_view(cx, &message, true).await,
+    };
+    let data = LeaseData {
+        config,
+        records: vec![],
+    };
+
+    match add_user_car(&email, data) {
+        Ok(_) => see_other("/dashboard").into_response(cx),
+        Err(message) => setup_view(cx, &message, true).await,
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

@@ -1,6 +1,9 @@
 //! The main dashboard: lease info, odometer recording, projections and charts.
 
-use leasetrack_core::{LeaseData, add_record, compute_report_data, load_user_data, save_user_data};
+use leasetrack_core::{
+    add_record, compute_report_data, load_user_car, load_user_leases, save_user_car,
+    select_user_car,
+};
 use serde::Deserialize;
 use topcoat::{
     Result,
@@ -51,8 +54,34 @@ async fn dashboard(cx: &Cx) -> Result<Response> {
 
 #[derive(Deserialize)]
 struct RecordForm {
+    car_id: String,
     odometer: String,
     date: String,
+}
+
+#[derive(Deserialize)]
+struct CarSelectionForm {
+    car_id: String,
+}
+
+#[derive(Deserialize)]
+struct CarConfigForm {
+    car_id: String,
+    #[serde(flatten)]
+    config: ConfigForm,
+}
+
+/// `POST /web/car/select`
+#[route(POST "/web/car/select")]
+async fn select_car(cx: &Cx, Form(form): Form<CarSelectionForm>) -> Result<Response> {
+    let Some(email) = current_email(cx).await? else {
+        return see_other("/login").into_response(cx);
+    };
+
+    match select_user_car(&email, &form.car_id) {
+        Ok(()) => see_other("/dashboard").into_response(cx),
+        Err(message) => render_dashboard(cx, &email, Some(message), None).await,
+    }
 }
 
 /// `POST /web/record`
@@ -66,9 +95,9 @@ async fn web_record(cx: &Cx, Form(form): Form<RecordForm>) -> Result<Response> {
     let date = chrono::NaiveDate::parse_from_str(form.date.trim(), "%Y-%m-%d");
 
     let (success, error) = match (odometer, date) {
-        (Ok(odo), Ok(day)) => match load_user_data(&email) {
+        (Ok(odo), Ok(day)) => match load_user_car(&email, &form.car_id) {
             Ok(mut data) => match add_record(&mut data, odo, day) {
-                Ok(warnings) => match save_user_data(&email, &data) {
+                Ok(warnings) => match save_user_car(&email, &form.car_id, &data) {
                     Ok(()) => {
                         let message = if warnings.is_empty() {
                             format!("Recorded {odo} km on {day}")
@@ -101,25 +130,23 @@ async fn web_record(cx: &Cx, Form(form): Form<RecordForm>) -> Result<Response> {
 
 /// `POST /web/config`
 #[route(POST "/web/config")]
-async fn web_config(cx: &Cx, Form(form): Form<ConfigForm>) -> Result<Response> {
+async fn web_config(cx: &Cx, Form(form): Form<CarConfigForm>) -> Result<Response> {
     let Some(email) = current_email(cx).await? else {
         return see_other("/login").into_response(cx);
     };
 
-    let config = match parse_config(&form) {
+    let config = match parse_config(&form.config) {
         Ok(config) => config,
         Err(message) => return render_dashboard(cx, &email, Some(message), None).await,
     };
 
-    // A user editing their lease before recording anything has no stored data
-    // yet, so fall back to a fresh, empty record set.
-    let mut data = load_user_data(&email).unwrap_or_else(|_| LeaseData {
-        config: config.clone(),
-        records: vec![],
-    });
+    let mut data = match load_user_car(&email, &form.car_id) {
+        Ok(data) => data,
+        Err(message) => return render_dashboard(cx, &email, Some(message), None).await,
+    };
     data.config = config;
 
-    if let Err(e) = save_user_data(&email, &data) {
+    if let Err(e) = save_user_car(&email, &form.car_id, &data) {
         return render_dashboard(cx, &email, Some(e), None).await;
     }
 
@@ -134,9 +161,17 @@ async fn render_dashboard(
     record_error: Option<String>,
     record_success: Option<String>,
 ) -> Result<Response> {
-    let Ok(data) = load_user_data(email) else {
+    let Ok(leases) = load_user_leases(email) else {
         return see_other("/setup").into_response(cx);
     };
+    let active_car_id = leases.active_car_id.clone();
+    let data = leases
+        .cars
+        .iter()
+        .find(|car| car.id == active_car_id)
+        .expect("load_user_leases validates the active car")
+        .data
+        .clone();
 
     let report = compute_report_data(&data);
     let today = chrono::Local::now().date_naive().to_string();
@@ -207,7 +242,22 @@ async fn render_dashboard(
             title: format!("LeaseTrack — {car_name}"),
             script: Some("/assets/dashboard.js"),
             <header>
-                <a class="brand" href="/dashboard"><h1>"LeaseTrack — " (&car_name)</h1></a>
+                <div class="header-car">
+                    <a class="brand" href="/dashboard"><h1>"LeaseTrack"</h1></a>
+                    <form method="post" action="/web/car/select" class="car-selector-form">
+                        <label for="car-selector" class="visually-hidden">"Select car"</label>
+                        <select id="car-selector" name="car_id" class="car-selector" onchange="this.form.submit()">
+                            for car in &leases.cars {
+                                if car.id == active_car_id {
+                                    <option value=(&car.id) selected="">(&car.data.config.car_name)</option>
+                                } else {
+                                    <option value=(&car.id)>(&car.data.config.car_name)</option>
+                                }
+                            }
+                        </select>
+                    </form>
+                    <a class="add-car" href="/setup?new=true" title="Add another car" aria-label="Add another car">"+"</a>
+                </div>
                 <div class="header-actions">
                     <span class="header-email">(email)</span>
                     <form method="post" action="/logout" class="signout-form">
@@ -236,6 +286,7 @@ async fn render_dashboard(
                     </div>
 
                     <form method="post" action="/web/config" id="cfg-form" style="display:none">
+                        <input type="hidden" name="car_id" value=(&active_car_id)>
                         <div class="info-row">
                             <span>"Car"</span>
                             <input type="text" name="car_name" value=(&car_name) maxlength="100" required="">
@@ -276,6 +327,7 @@ async fn render_dashboard(
                         <div class="error-box inline">(&record_error)</div>
                     }
                     <form method="post" action="/web/record" class="record-form">
+                        <input type="hidden" name="car_id" value=(&active_car_id)>
                         <label for="odometer">"Odometer (km)"</label>
                         <input type="number" id="odometer" name="odometer" min="0" placeholder="e.g. 25000" required="">
                         <label for="date">"Date"</label>
