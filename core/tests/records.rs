@@ -115,6 +115,17 @@ fn a_reading_after_the_lease_ended_warns_but_is_stored() {
 }
 
 #[test]
+fn an_open_ended_lease_has_no_upper_date_limit() {
+    let mut d = data();
+    d.config.lease_years = 0;
+    d.config.allowed_km_per_year = 0;
+
+    let warnings = add_record(&mut d, 70_000, date("2035-01-01")).expect("accepted");
+
+    assert!(warnings.is_empty(), "got: {warnings:?}");
+}
+
+#[test]
 fn the_final_day_of_the_lease_is_inside_the_period() {
     let mut d = data();
     // The lease runs 2025-01-01 through 2027-12-31.

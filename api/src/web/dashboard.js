@@ -19,5 +19,9 @@ function calcEnd() {
     const d = new Date(start);
     d.setFullYear(d.getFullYear() + years);
     el.textContent = d.toISOString().slice(0, 10);
+  } else if (years === 0) {
+    el.textContent = 'Open ended';
+  } else {
+    el.textContent = '—';
   }
 }

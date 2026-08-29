@@ -168,12 +168,12 @@ async fn init(
     if req.car_name.len() > 100 {
         return Err(AppError("car_name must be 100 characters or fewer".into()));
     }
-    if !(1..=10).contains(&req.lease_years) {
-        return Err(AppError("lease_years must be between 1 and 10".into()));
+    if req.lease_years > 10 {
+        return Err(AppError("lease_years must be between 0 and 10".into()));
     }
-    if req.allowed_km_per_year == 0 {
+    if (req.lease_years == 0) != (req.allowed_km_per_year == 0) {
         return Err(AppError(
-            "allowed_km_per_year must be greater than 0".into(),
+            "lease_years and allowed_km_per_year must both be 0 for open-ended tracking".into(),
         ));
     }
 

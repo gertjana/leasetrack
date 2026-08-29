@@ -190,39 +190,44 @@ async fn render_dashboard(
         .collect();
 
     let allowed = report.km_allowed_per_year as f64;
+    let allowance_enabled = report.km_allowed_per_year > 0;
     let projected_year_total = report.current_year.as_ref().map(|p| p.projected_year_total);
 
-    let years: Vec<YearBar> = report
-        .years
-        .iter()
-        .map(|y| {
-            let km = y.km_driven.unwrap_or(0.0);
-            let pct = ((km / allowed) * 100.0).min(125.0) as u32;
-            let status = if y.is_future {
-                "future"
-            } else if y.is_current {
-                "current"
-            } else if km > allowed {
-                "over"
-            } else {
-                "ok"
-            };
-            // For the current year, add a projected-remainder segment.
-            let proj_pct = y.is_current.then(|| {
-                projected_year_total.map(|total| {
-                    let full = (total / allowed * 100.0).min(125.0) as u32;
-                    full.saturating_sub(pct)
-                })
-            });
-            YearBar {
-                year_num: y.year_num,
-                km: km as u32,
-                pct,
-                proj_pct: proj_pct.flatten(),
-                status,
-            }
-        })
-        .collect();
+    let years: Vec<YearBar> = if allowance_enabled {
+        report
+            .years
+            .iter()
+            .map(|y| {
+                let km = y.km_driven.unwrap_or(0.0);
+                let pct = ((km / allowed) * 100.0).min(125.0) as u32;
+                let status = if y.is_future {
+                    "future"
+                } else if y.is_current {
+                    "current"
+                } else if km > allowed {
+                    "over"
+                } else {
+                    "ok"
+                };
+                // For the current year, add a projected-remainder segment.
+                let proj_pct = y.is_current.then(|| {
+                    projected_year_total.map(|total| {
+                        let full = (total / allowed * 100.0).min(125.0) as u32;
+                        full.saturating_sub(pct)
+                    })
+                });
+                YearBar {
+                    year_num: y.year_num,
+                    km: km as u32,
+                    pct,
+                    proj_pct: proj_pct.flatten(),
+                    status,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let current = report.current_year.as_ref();
     let proj_year_diff = current.map(|p| p.projected_diff as i64);
@@ -233,7 +238,11 @@ async fn render_dashboard(
 
     let car_name = report.car_name.clone();
     let lease_start = report.lease_start.to_string();
-    let lease_end = report.lease_end.to_string();
+    let lease_end = if report.open_ended {
+        "Open ended".to_string()
+    } else {
+        report.lease_end.to_string()
+    };
     let record_error = record_error.unwrap_or_default();
     let record_success = record_success.unwrap_or_default();
 
@@ -276,11 +285,17 @@ async fn render_dashboard(
                     <div id="cfg-view">
                         <div class="info-row"><span>"Car"</span><span>(&car_name)</span></div>
                         <div class="info-row"><span>"Start date"</span><span>(&lease_start)</span></div>
-                        <div class="info-row"><span>"Years"</span><span>(report.lease_years)</span></div>
+                        <div class="info-row"><span>"Years"</span><span>
+                            if report.open_ended { "Open ended" } else { (report.lease_years) }
+                        </span></div>
                         <div class="info-row"><span>"End date"</span><span>(&lease_end)</span></div>
-                        <div class="info-row"><span>"Allowed / year"</span><span>(report.km_allowed_per_year) " km"</span></div>
+                        <div class="info-row"><span>"Allowed / year"</span><span>
+                            if allowance_enabled { (report.km_allowed_per_year) " km" } else { "Not set" }
+                        </span></div>
                         <div class="info-row"><span>"Start odometer"</span><span>(data.config.start_odometer) " km"</span></div>
-                        <div class="info-row"><span>"Allowed total"</span><span>(report.km_allowed_total) " km"</span></div>
+                        if allowance_enabled {
+                            <div class="info-row"><span>"Allowed total"</span><span>(report.km_allowed_total) " km"</span></div>
+                        }
                         <div class="info-row"><span>"Total driven"</span><span>(report.total_driven as u32) " km"</span></div>
                         lease_extras(report: &report)
                     </div>
@@ -297,7 +312,7 @@ async fn render_dashboard(
                         </div>
                         <div class="info-row">
                             <span>"Years"</span>
-                            <input type="number" id="cfg-years" name="lease_years" value=(report.lease_years) min="1" max="10" required="" oninput="calcEnd()">
+                            <input type="number" id="cfg-years" name="lease_years" value=(report.lease_years) min="0" max="10" required="" oninput="calcEnd()">
                         </div>
                         <div class="info-row">
                             <span>"End date"</span>
@@ -305,13 +320,15 @@ async fn render_dashboard(
                         </div>
                         <div class="info-row">
                             <span>"Allowed / year"</span>
-                            <input type="number" name="allowed_km_per_year" value=(report.km_allowed_per_year) min="1" required="">
+                            <input type="number" name="allowed_km_per_year" value=(report.km_allowed_per_year) min="0" required="">
                         </div>
                         <div class="info-row">
                             <span>"Start odometer"</span>
                             <input type="number" name="start_odometer" value=(data.config.start_odometer) min="0" required="">
                         </div>
-                        <div class="info-row"><span>"Allowed total"</span><span>(report.km_allowed_total) " km"</span></div>
+                        if allowance_enabled {
+                            <div class="info-row"><span>"Allowed total"</span><span>(report.km_allowed_total) " km"</span></div>
+                        }
                         <div class="info-row"><span>"Total driven"</span><span>(report.total_driven as u32) " km"</span></div>
                         lease_extras(report: &report)
                         <button type="submit" class="config-save">"Save"</button>
@@ -338,7 +355,17 @@ async fn render_dashboard(
 
                 <div class="panel span-full">
                     <h2>"Projections"</h2>
-                    if let Some(year_diff) = proj_year_diff {
+                    if !allowance_enabled {
+                        if let Some(current) = current {
+                            distance_projection_card(
+                                label: format!("End of lease year {}", current.year_num),
+                                km: current.projected_year_total as u32,
+                                sub: format!("based on {} km/day", current.avg_daily_rate as u32),
+                            )
+                        } else {
+                            <p class="proj-empty">"No projection data yet."</p>
+                        }
+                    } else if let Some(year_diff) = proj_year_diff {
                         <div class="proj-grid">
                             projection_card(
                                 label: "End of current year vs annual limit",
@@ -365,30 +392,32 @@ async fn render_dashboard(
                     }
                 </div>
 
-                <div class="panel span-full">
-                    <h2>"Km per year"</h2>
-                    for year in &years {
-                        <div class="bar-row">
-                            <div class="bar-label">"Year " (year.year_num)</div>
-                            <div class="bar-track">
-                                <div
-                                    class=(format!("bar-fill {}", year.status))
-                                    style=(format!("width:{}%", year.pct))
-                                ></div>
-                                if let Some(proj) = year.proj_pct.filter(|p| *p > 0) {
-                                    <div class="bar-fill proj" style=(format!("width:{proj}%"))></div>
-                                }
+                if allowance_enabled {
+                    <div class="panel span-full">
+                        <h2>"Km per year"</h2>
+                        for year in &years {
+                            <div class="bar-row">
+                                <div class="bar-label">"Year " (year.year_num)</div>
+                                <div class="bar-track">
+                                    <div
+                                        class=(format!("bar-fill {}", year.status))
+                                        style=(format!("width:{}%", year.pct))
+                                    ></div>
+                                    if let Some(proj) = year.proj_pct.filter(|p| *p > 0) {
+                                        <div class="bar-fill proj" style=(format!("width:{proj}%"))></div>
+                                    }
+                                </div>
+                                <div class="bar-km">
+                                    if year.status != "future" {
+                                        (year.km) " km"
+                                    } else {
+                                        "—"
+                                    }
+                                </div>
                             </div>
-                            <div class="bar-km">
-                                if year.status != "future" {
-                                    (year.km) " km"
-                                } else {
-                                    "—"
-                                }
-                            </div>
-                        </div>
-                    }
-                </div>
+                        }
+                    </div>
+                }
 
                 <div class="panel span-full">
                     <h2>"Odometer records"</h2>
@@ -453,6 +482,17 @@ async fn projection_card(label: &str, diff: i64, #[into] sub: String) -> Result 
                 if diff > 0 { "+" }
                 (diff) " km"
             </div>
+            <div class="proj-sub">(sub)</div>
+        </div>
+    }
+}
+
+#[component]
+async fn distance_projection_card(#[into] label: String, km: u32, #[into] sub: String) -> Result {
+    view! {
+        <div class="proj-card">
+            <div class="proj-label">(label)</div>
+            <div class="proj-val">(km) " km"</div>
             <div class="proj-sub">(sub)</div>
         </div>
     }

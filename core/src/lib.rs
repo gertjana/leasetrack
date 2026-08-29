@@ -641,8 +641,13 @@ pub struct YearStats {
 pub fn compute_year_stats(data: &LeaseData) -> Vec<YearStats> {
     let today = Local::now().date_naive();
     let cfg = &data.config;
+    let year_count = if cfg.lease_years == 0 {
+        current_lease_year(cfg.lease_start, today)
+    } else {
+        cfg.lease_years
+    };
 
-    (0..cfg.lease_years)
+    (0..year_count)
         .map(|y| {
             let start = add_years(cfg.lease_start, y);
             let end = add_years(cfg.lease_start, y + 1);
@@ -679,6 +684,18 @@ pub fn compute_year_stats(data: &LeaseData) -> Vec<YearStats> {
         .collect()
 }
 
+fn current_lease_year(lease_start: NaiveDate, today: NaiveDate) -> u32 {
+    if today < lease_start {
+        return 1;
+    }
+
+    let mut years = (today.year() - lease_start.year()) as u32;
+    if add_years(lease_start, years) > today {
+        years = years.saturating_sub(1);
+    }
+    years + 1
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct CurrentYearProjection {
     pub year_num: u32,
@@ -696,6 +713,7 @@ pub struct ReportData {
     pub car_name: String,
     pub lease_start: NaiveDate,
     pub lease_end: NaiveDate,
+    pub open_ended: bool,
     pub lease_years: u32,
     pub km_allowed_per_year: u32,
     pub km_allowed_total: u32,
@@ -711,7 +729,13 @@ pub struct ReportData {
 pub fn compute_report_data(data: &LeaseData) -> ReportData {
     let today = Local::now().date_naive();
     let cfg = &data.config;
-    let lease_end = add_years(cfg.lease_start, cfg.lease_years) - Duration::days(1);
+    let open_ended = cfg.lease_years == 0;
+    let end_year = if open_ended {
+        current_lease_year(cfg.lease_start, today)
+    } else {
+        cfg.lease_years
+    };
+    let lease_end = add_years(cfg.lease_start, end_year) - Duration::days(1);
     let km_allowed_total = cfg.allowed_km_per_year * cfg.lease_years;
 
     let years = compute_year_stats(data);
@@ -765,29 +789,34 @@ pub fn compute_report_data(data: &LeaseData) -> ReportData {
     });
 
     // End-of-lease projected total
-    let projected_total = avg_daily_rate.map(|rate| {
-        years
-            .iter()
-            .map(|s| {
-                if !s.is_current && !s.is_future {
-                    s.km_driven.unwrap_or(0.0)
-                } else if s.is_current {
-                    let km = s.km_driven.unwrap_or(0.0);
-                    let days_elapsed = (today - s.start).num_days() as f64;
-                    let days_total = (s.end - s.start).num_days() as f64;
-                    km + rate * (days_total - days_elapsed)
-                } else {
-                    let days_total = (s.end - s.start).num_days() as f64;
-                    rate * days_total
-                }
+    let projected_total = (!open_ended)
+        .then(|| {
+            avg_daily_rate.map(|rate| {
+                years
+                    .iter()
+                    .map(|s| {
+                        if !s.is_current && !s.is_future {
+                            s.km_driven.unwrap_or(0.0)
+                        } else if s.is_current {
+                            let km = s.km_driven.unwrap_or(0.0);
+                            let days_elapsed = (today - s.start).num_days() as f64;
+                            let days_total = (s.end - s.start).num_days() as f64;
+                            km + rate * (days_total - days_elapsed)
+                        } else {
+                            let days_total = (s.end - s.start).num_days() as f64;
+                            rate * days_total
+                        }
+                    })
+                    .sum()
             })
-            .sum()
-    });
+        })
+        .flatten();
 
     ReportData {
         car_name: cfg.car_name.clone(),
         lease_start: cfg.lease_start,
         lease_end,
+        open_ended,
         lease_years: cfg.lease_years,
         km_allowed_per_year: cfg.allowed_km_per_year,
         km_allowed_total,
@@ -832,12 +861,15 @@ pub fn add_record(
     let mut warnings = Vec::new();
 
     let lease_end = add_years(cfg.lease_start, cfg.lease_years);
-    if date < cfg.lease_start || date > lease_end {
+    if date < cfg.lease_start || (cfg.lease_years > 0 && date > lease_end) {
+        let period_end = if cfg.lease_years == 0 {
+            "open ended".to_string()
+        } else {
+            (lease_end - Duration::days(1)).to_string()
+        };
         warnings.push(format!(
             "{} is outside the lease period ({} – {})",
-            date,
-            cfg.lease_start,
-            lease_end - Duration::days(1)
+            date, cfg.lease_start, period_end
         ));
     }
 

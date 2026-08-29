@@ -229,6 +229,18 @@ fn year_stats_never_report_negative_distance() {
     }
 }
 
+#[test]
+fn open_ended_stats_run_through_the_current_lease_year() {
+    let today = Local::now().date_naive();
+    let data = lease(today - Duration::days(400), 0, 0, 0);
+
+    let years = compute_year_stats(&data);
+
+    assert_eq!(years.len(), 2);
+    assert!(years[1].is_current);
+    assert!(years.iter().all(|year| !year.is_future));
+}
+
 // ─── compute_report_data ──────────────────────────────────────────────────────
 
 #[test]
@@ -254,6 +266,23 @@ fn report_totals_the_allowance_across_the_whole_lease() {
 fn report_lease_end_is_the_day_before_the_final_anniversary() {
     let report = compute_report_data(&lease(date("2025-01-01"), 3, 20_000, 0));
     assert_eq!(report.lease_end, date("2027-12-31"));
+}
+
+#[test]
+fn open_ended_report_only_projects_the_current_lease_year() {
+    let today = Local::now().date_naive();
+    let mut data = lease(today - Duration::days(100), 0, 0, 0);
+    data.records.push(KmRecord {
+        date: today - Duration::days(50),
+        odometer: 5_000,
+    });
+
+    let report = compute_report_data(&data);
+
+    assert!(report.open_ended);
+    assert!(report.current_year.is_some());
+    assert_eq!(report.projected_total, None);
+    assert_eq!(report.km_allowed_total, 0);
 }
 
 #[test]

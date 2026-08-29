@@ -35,14 +35,20 @@ pub fn parse_config(form: &ConfigForm) -> std::result::Result<LeaseConfig, Strin
         .map_err(|_| "Invalid lease start date — use YYYY-MM-DD.".to_string())?;
 
     let lease_years: u32 = match form.lease_years.trim().parse() {
-        Ok(n) if (1..=10).contains(&n) => n,
-        _ => return Err("Lease years must be between 1 and 10.".to_string()),
+        Ok(n) if n <= 10 => n,
+        _ => return Err("Lease years must be between 0 and 10.".to_string()),
     };
 
     let allowed_km_per_year: u32 = match form.allowed_km_per_year.trim().parse() {
-        Ok(n) if n > 0 => n,
-        _ => return Err("Allowed km/year must be greater than 0.".to_string()),
+        Ok(n) => n,
+        _ => return Err("Allowed km/year must be a whole number.".to_string()),
     };
+
+    if (lease_years == 0) != (allowed_km_per_year == 0) {
+        return Err(
+            "Set both lease years and allowed km/year to 0 for open-ended tracking.".to_string(),
+        );
+    }
 
     // Parsed strictly rather than defaulting: silently falling back to 0 would
     // overwrite a mistyped reading and skew every "total driven" figure derived
@@ -94,11 +100,12 @@ async fn setup_view(cx: &Cx, error: &str, adding_car: bool) -> Result<Response> 
                     <input type="date" id="lease_start" name="lease_start" value=(&today) required="" oninput="calcEnd()">
 
                     <label for="lease_years">"Lease duration (years)"</label>
-                    <input type="number" id="lease_years" name="lease_years" value="3" min="1" max="10" required="" oninput="calcEnd()">
+                    <input type="number" id="lease_years" name="lease_years" value="3" min="0" max="10" required="" oninput="calcEnd()">
                     <p class="hint">"End date: " <span id="end-date">"—"</span></p>
 
                     <label for="allowed_km_per_year">"Allowed km per year"</label>
-                    <input type="number" id="allowed_km_per_year" name="allowed_km_per_year" value="20000" min="1" required="">
+                    <input type="number" id="allowed_km_per_year" name="allowed_km_per_year" value="20000" min="0" required="">
+                    <p class="hint">"Set both duration and allowance to 0 for open-ended tracking."</p>
 
                     <label for="start_odometer">"Start odometer (km)"</label>
                     <input type="number" id="start_odometer" name="start_odometer" value="0" min="0" required="">
@@ -232,7 +239,14 @@ mod tests {
 
     #[test]
     fn the_start_date_must_be_iso_formatted() {
-        for bad in ["01-01-2025", "2025/01/01", "tomorrow", "", "2025-13-01", "2025-02-30"] {
+        for bad in [
+            "01-01-2025",
+            "2025/01/01",
+            "tomorrow",
+            "",
+            "2025-13-01",
+            "2025-02-30",
+        ] {
             let mut f = form();
             f.lease_start = bad.to_string();
 
@@ -252,33 +266,55 @@ mod tests {
     // ─── Duration ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn the_lease_runs_between_one_and_ten_years() {
+    fn the_lease_runs_between_zero_and_ten_years() {
         for good in ["1", "5", "10"] {
             let mut f = form();
             f.lease_years = good.to_string();
             assert!(parse_config(&f).is_ok(), "{good} years should be allowed");
         }
 
-        for bad in ["0", "11", "-1", "abc", "", "3.5"] {
+        for bad in ["11", "-1", "abc", "", "3.5"] {
             let mut f = form();
             f.lease_years = bad.to_string();
 
             let error = parse_config(&f).expect_err("rejected");
-            assert!(error.contains("between 1 and 10"), "{bad} gave: {error}");
+            assert!(error.contains("between 0 and 10"), "{bad} gave: {error}");
         }
     }
 
     // ─── Allowance ────────────────────────────────────────────────────────────
 
     #[test]
-    fn the_annual_allowance_must_be_positive() {
-        for bad in ["0", "-100", "abc", "", "20,000"] {
+    fn the_annual_allowance_must_be_a_whole_number() {
+        for bad in ["-100", "abc", "", "20,000"] {
             let mut f = form();
             f.allowed_km_per_year = bad.to_string();
 
             let error = parse_config(&f).expect_err("rejected");
-            assert!(error.contains("greater than 0"), "{bad} gave: {error}");
+            assert!(error.contains("whole number"), "{bad} gave: {error}");
         }
+    }
+
+    #[test]
+    fn zero_years_and_allowance_enable_open_ended_tracking() {
+        let mut f = form();
+        f.lease_years = "0".to_string();
+        f.allowed_km_per_year = "0".to_string();
+
+        let config = parse_config(&f).expect("accepted");
+        assert_eq!(config.lease_years, 0);
+        assert_eq!(config.allowed_km_per_year, 0);
+    }
+
+    #[test]
+    fn open_ended_values_must_be_zero_together() {
+        let mut f = form();
+        f.lease_years = "0".to_string();
+        assert!(parse_config(&f).is_err());
+
+        f.lease_years = "3".to_string();
+        f.allowed_km_per_year = "0".to_string();
+        assert!(parse_config(&f).is_err());
     }
 
     // ─── Start odometer ───────────────────────────────────────────────────────
@@ -321,7 +357,10 @@ mod tests {
     fn the_car_name_is_capped_at_100_characters() {
         let mut f = form();
         f.car_name = "x".repeat(100);
-        assert!(parse_config(&f).is_ok(), "100 characters is the limit, inclusive");
+        assert!(
+            parse_config(&f).is_ok(),
+            "100 characters is the limit, inclusive"
+        );
 
         f.car_name = "x".repeat(101);
         let error = parse_config(&f).expect_err("rejected");
