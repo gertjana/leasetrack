@@ -496,7 +496,7 @@ async fn render_dashboard(
                                         <form method="post" action="/web/record/delete" class="record-delete-form" onsubmit="return confirm('Delete this odometer record?')">
                                             <input type="hidden" name="car_id" value=(&active_car_id)>
                                             <input type="hidden" name="date" value=(&row.date)>
-                                            <button type="submit" class="delete-record" aria-label=(format!("Delete odometer record from {}", row.date))>"Delete"</button>
+                                            <button type="submit" class="delete-record" aria-label=(format!("Delete odometer record from {}", row.date))>"🗑"</button>
                                         </form>
                                     </td>
                                 </tr>
