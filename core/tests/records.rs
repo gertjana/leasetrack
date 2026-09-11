@@ -2,7 +2,7 @@
 //! with a warning, and how records are ordered.
 
 use chrono::NaiveDate;
-use leasetrack_core::{LeaseConfig, LeaseData, add_record};
+use leasetrack_core::{LeaseConfig, LeaseData, add_record, remove_record};
 
 fn date(s: &str) -> NaiveDate {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").expect("valid test date")
@@ -219,4 +219,35 @@ fn add_record_does_not_persist_anything_itself() {
     assert_eq!(d.records.len(), 1);
     assert_eq!(d.records[0].date, date("2025-03-01"));
     assert_eq!(d.records[0].odometer, 5_000);
+}
+
+#[test]
+fn remove_record_removes_the_matching_record_and_returns_it() {
+    let mut d = data();
+    add_record(&mut d, 5_000, date("2025-03-01")).expect("accepted");
+    add_record(&mut d, 9_000, date("2025-06-01")).expect("accepted");
+
+    let removed = remove_record(&mut d, date("2025-03-01")).expect("removed");
+
+    assert_eq!(removed.date, date("2025-03-01"));
+    assert_eq!(removed.odometer, 5_000);
+    assert_eq!(d.records.len(), 1);
+    assert_eq!(d.records[0].date, date("2025-06-01"));
+    assert_eq!(d.records[0].odometer, 9_000);
+}
+
+#[test]
+fn remove_record_rejects_a_missing_date_without_mutating_records() {
+    let mut d = data();
+    add_record(&mut d, 5_000, date("2025-03-01")).expect("accepted");
+    add_record(&mut d, 9_000, date("2025-06-01")).expect("accepted");
+
+    let error = remove_record(&mut d, date("2025-09-01")).expect_err("missing record");
+
+    assert!(error.contains("No record found"), "got: {error}");
+    assert_eq!(d.records.len(), 2);
+    assert_eq!(
+        d.records.iter().map(|r| (r.date, r.odometer)).collect::<Vec<_>>(),
+        vec![(date("2025-03-01"), 5_000), (date("2025-06-01"), 9_000)]
+    );
 }
