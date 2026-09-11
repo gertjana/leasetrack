@@ -1,7 +1,7 @@
 //! The main dashboard: lease info, odometer recording, projections and charts.
 
 use leasetrack_core::{
-    add_record, compute_report_data, load_user_car, load_user_leases, save_user_car,
+    add_record, compute_report_data, load_user_car, load_user_leases, remove_record, save_user_car,
     select_user_car,
 };
 use serde::Deserialize;
@@ -56,6 +56,12 @@ async fn dashboard(cx: &Cx) -> Result<Response> {
 struct RecordForm {
     car_id: String,
     odometer: String,
+    date: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteRecordForm {
+    car_id: String,
     date: String,
 }
 
@@ -126,6 +132,52 @@ async fn web_record(cx: &Cx, Form(form): Form<RecordForm>) -> Result<Response> {
     };
 
     render_dashboard(cx, &email, error, success).await
+}
+
+/// `POST /web/record/delete`
+#[route(POST "/web/record/delete")]
+async fn web_delete_record(cx: &Cx, Form(form): Form<DeleteRecordForm>) -> Result<Response> {
+    let Some(email) = current_email(cx).await? else {
+        return see_other("/login").into_response(cx);
+    };
+
+    let date = match chrono::NaiveDate::parse_from_str(form.date.trim(), "%Y-%m-%d") {
+        Ok(day) => day,
+        Err(_) => {
+            return render_dashboard(
+                cx,
+                &email,
+                Some("Invalid date — use YYYY-MM-DD format.".to_string()),
+                None,
+            )
+            .await;
+        }
+    };
+
+    let mut data = match load_user_car(&email, &form.car_id) {
+        Ok(data) => data,
+        Err(message) => return render_dashboard(cx, &email, Some(message), None).await,
+    };
+    let removed = match remove_record(&mut data, date) {
+        Ok(record) => record,
+        Err(message) => return render_dashboard(cx, &email, Some(message), None).await,
+    };
+
+    match save_user_car(&email, &form.car_id, &data) {
+        Ok(()) => {
+            render_dashboard(
+                cx,
+                &email,
+                None,
+                Some(format!(
+                    "Deleted record from {} ({} km).",
+                    removed.date, removed.odometer
+                )),
+            )
+            .await
+        }
+        Err(message) => render_dashboard(cx, &email, Some(message), None).await,
+    }
 }
 
 /// `POST /web/config`
@@ -423,7 +475,7 @@ async fn render_dashboard(
                     <h2>"Odometer records"</h2>
                     <table class="records-table">
                         <thead>
-                            <tr><th>"Date"</th><th>"Odometer"</th><th>"Delta"</th></tr>
+                            <tr><th>"Date"</th><th>"Odometer"</th><th>"Delta"</th><th class="record-action">"Delete"</th></tr>
                         </thead>
                         <tbody>
                             for row in &records {
@@ -439,6 +491,13 @@ async fn render_dashboard(
                                         } else {
                                             "—"
                                         }
+                                    </td>
+                                    <td class="record-action">
+                                        <form method="post" action="/web/record/delete" class="record-delete-form" onsubmit="return confirm('Delete this odometer record?')">
+                                            <input type="hidden" name="car_id" value=(&active_car_id)>
+                                            <input type="hidden" name="date" value=(&row.date)>
+                                            <button type="submit" class="delete-record" aria-label=(format!("Delete odometer record from {}", row.date))>"Delete"</button>
+                                        </form>
                                     </td>
                                 </tr>
                             }

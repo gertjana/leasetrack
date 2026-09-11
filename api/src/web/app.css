@@ -440,6 +440,20 @@ main {
 }
 .records-table td { padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border-sub); }
 .records-table tr:last-child td { border-bottom: none; }
+.record-action { width: 1%; text-align: right; white-space: nowrap; }
+.record-delete-form { margin: 0; }
+.delete-record {
+  width: auto;
+  padding: 0.2rem 0.55rem;
+  background: transparent;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  color: var(--red);
+  font-family: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.delete-record:hover { background: var(--red); color: #fff; }
 
 .delta.pos { color: var(--green); }
 .delta.neg { color: var(--red); }
