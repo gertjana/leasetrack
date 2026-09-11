@@ -898,3 +898,15 @@ pub fn add_record(
 
     Ok(warnings)
 }
+
+/// Remove the odometer record for `date`.
+/// Returns the removed record, or an error when no record exists for the date.
+/// Does NOT call `save_data`; the caller is responsible for persisting.
+pub fn remove_record(data: &mut LeaseData, date: NaiveDate) -> Result<KmRecord, String> {
+    let index = data
+        .records
+        .iter()
+        .position(|record| record.date == date)
+        .ok_or_else(|| format!("No record found for {date}."))?;
+    Ok(data.records.remove(index))
+}
