@@ -30,6 +30,8 @@ struct YearBar {
     pct: u32,
     /// For the current year, the projected remainder drawn past `pct`.
     proj_pct: Option<u32>,
+    /// The part of the projected remainder beyond the annual allowance.
+    proj_over_pct: Option<u32>,
     status: &'static str,
 }
 
@@ -261,18 +263,25 @@ async fn render_dashboard(
                 } else {
                     "ok"
                 };
-                // For the current year, add a projected-remainder segment.
-                let proj_pct = y.is_current.then(|| {
-                    projected_year_total.map(|total| {
-                        let full = (total / allowed * 100.0).min(125.0) as u32;
-                        full.saturating_sub(pct)
+                // For the current year, add projected-remainder segments,
+                // split at the annual limit so the overdraft stands out.
+                let proj = y
+                    .is_current
+                    .then(|| {
+                        projected_year_total.map(|total| {
+                            let full = (total / allowed * 100.0).min(125.0) as u32;
+                            let within = full.min(100).saturating_sub(pct);
+                            let over = full.saturating_sub(pct.max(100));
+                            (within, over)
+                        })
                     })
-                });
+                    .flatten();
                 YearBar {
                     year_num: y.year_num,
                     km: km as u32,
                     pct,
-                    proj_pct: proj_pct.flatten(),
+                    proj_pct: proj.map(|p| p.0),
+                    proj_over_pct: proj.map(|p| p.1),
                     status,
                 }
             })
@@ -457,6 +466,9 @@ async fn render_dashboard(
                                     ></div>
                                     if let Some(proj) = year.proj_pct.filter(|p| *p > 0) {
                                         <div class="bar-fill proj" style=(format!("width:{proj}%"))></div>
+                                    }
+                                    if let Some(over) = year.proj_over_pct.filter(|p| *p > 0) {
+                                        <div class="bar-fill proj-over" style=(format!("width:{over}%"))></div>
                                     }
                                 </div>
                                 <div class="bar-km">

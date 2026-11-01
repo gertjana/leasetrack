@@ -417,6 +417,7 @@ main {
 .bar-fill.current { background: var(--yellow); border-radius: 3px 0 0 3px; }
 .bar-fill.future  { background: var(--bg-bar-fut); }
 .bar-fill.proj    { background: var(--yellow); opacity: 0.35; border-radius: 0 3px 3px 0; }
+.bar-fill.proj-over { background: var(--red); opacity: 0.55; border-radius: 0 3px 3px 0; }
 .bar-km { width: 5.5rem; text-align: right; color: var(--muted); font-size: 0.8rem; flex-shrink: 0; }
 
 .proj-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
