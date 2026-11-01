@@ -17,7 +17,7 @@ use topcoat::{
         route,
     },
     session,
-    view::view,
+    view::{ViewExt, view},
 };
 
 use super::{base_url, current_email, layout::document, limiter, store};
@@ -69,7 +69,9 @@ async fn login_view(cx: &Cx, error: &str) -> Result<Response> {
                 <a class="back tight" href="/forgot">"Forgot your API key?"</a>
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 
@@ -136,7 +138,9 @@ async fn register_view(cx: &Cx, error: &str, success: bool) -> Result<Response> 
                 }
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 
@@ -218,7 +222,9 @@ async fn forgot_view(cx: &Cx, success: bool) -> Result<Response> {
                 }
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 
@@ -312,7 +318,9 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                 <a class="back" href="/login">"Cancel"</a>
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)?;
     response
         .headers_mut()
@@ -374,7 +382,9 @@ async fn reset_result_view(cx: &Cx, error: &str, api_key: &str) -> Result<Respon
                 }
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)?;
     response
         .headers_mut()

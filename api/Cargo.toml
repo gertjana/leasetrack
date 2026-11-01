@@ -14,10 +14,10 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The web pages are rendered by Topcoat; `tower` bridges its router into the
 # axum server that still owns the JSON API.
-topcoat = { version = "0.6.2", features = ["tower"] }
-reqwest = { version = "0.12", features = ["json"] }
+topcoat = { version = "0.11", features = ["tower"] }
+reqwest = { version = "0.13", features = ["json"] }

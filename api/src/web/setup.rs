@@ -12,7 +12,7 @@ use topcoat::{
         response::{IntoResponse, Response},
         route,
     },
-    view::view,
+    view::{ViewExt, view},
 };
 
 use super::{current_email, layout::document};
@@ -119,7 +119,9 @@ async fn setup_view(cx: &Cx, error: &str, adding_car: bool) -> Result<Response> 
                 }
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 

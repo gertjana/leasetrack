@@ -1,5 +1,4 @@
 use chrono::{Datelike, Duration, Local, NaiveDate};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -451,7 +450,7 @@ pub fn migrate_users_to_hashed_keys() -> Result<usize, String> {
 
 /// Generate a cryptographically random API key (32 hex characters).
 pub fn generate_api_key() -> String {
-    let bytes: [u8; 16] = rand::thread_rng().r#gen();
+    let bytes: [u8; 16] = rand::random();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
@@ -459,7 +458,7 @@ pub fn generate_api_key() -> String {
 ///
 /// Used for session identifiers, CSRF tokens and single-use reset links.
 pub fn generate_token() -> String {
-    let bytes: [u8; 32] = rand::thread_rng().r#gen();
+    let bytes: [u8; 32] = rand::random();
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 

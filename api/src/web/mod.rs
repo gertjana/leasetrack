@@ -23,7 +23,7 @@ use topcoat::{
         route,
     },
     session::{self, RouterBuilderSessionExt, SessionConfig},
-    view::view,
+    view::{ViewExt, view},
 };
 
 use crate::ratelimit::{self, RateLimiter};
@@ -186,7 +186,9 @@ async fn too_many_requests(cx: &Cx, retry_after: u64) -> Result<Response> {
                 <a class="back" href="/login">"Back to sign in"</a>
             </div>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 

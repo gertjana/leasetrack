@@ -7,7 +7,7 @@ edition = "2024"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-rand = "0.8"
+rand = "0.10"
 sha2 = "0.11.0"
 
 # Integration tests see only the public API plus these; both are already
