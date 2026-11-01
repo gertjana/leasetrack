@@ -14,7 +14,7 @@ use topcoat::{
         response::{IntoResponse, Response},
         route,
     },
-    view::{View, component, view},
+    view::{View, ViewExt, component, view},
 };
 
 use super::setup::{ConfigForm, parse_config};
@@ -288,6 +288,7 @@ async fn render_dashboard(
         .projected_total
         .map(|total| total as i64 - report.km_allowed_total as i64);
 
+    let report = &report;
     let car_name = report.car_name.clone();
     let lease_start = report.lease_start.to_string();
     let lease_end = if report.open_ended {
@@ -506,15 +507,17 @@ async fn render_dashboard(
                 </div>
             </main>
         )
-    }?
+    }
+    .single()
+    .await?
     .into_response(cx)
 }
 
 /// The optional last-reading and average-rate rows, shown in both the read-only
 /// panel and the edit form.
 #[component]
-async fn lease_extras(report: &leasetrack_core::ReportData) -> Result {
-    view! {
+async fn lease_extras(report: &leasetrack_core::ReportData) -> Result<impl View> {
+    Ok(view! {
         if let Some(last) = report.last_record.as_ref() {
             <div class="info-row">
                 <span>"Last reading"</span>
@@ -527,14 +530,14 @@ async fn lease_extras(report: &leasetrack_core::ReportData) -> Result {
                 <span>(rate as u32) " km/day"</span>
             </div>
         }
-    }
+    })
 }
 
 /// A single projection tile, coloured green when under the limit and red when
 /// over.
 #[component]
-async fn projection_card(label: &str, diff: i64, #[into] sub: String) -> Result {
-    view! {
+async fn projection_card(label: &str, diff: i64, #[into] sub: String) -> Result<impl View> {
+    Ok(view! {
         <div class="proj-card">
             <div class="proj-label">(label)</div>
             <div class=(if diff > 0 { "proj-val red" } else { "proj-val green" })>
@@ -543,19 +546,17 @@ async fn projection_card(label: &str, diff: i64, #[into] sub: String) -> Result 
             </div>
             <div class="proj-sub">(sub)</div>
         </div>
-    }
+    })
 }
 
 #[component]
-async fn distance_projection_card(#[into] label: String, km: u32, #[into] sub: String) -> Result {
-    view! {
+async fn distance_projection_card(#[into] label: String, km: u32, #[into] sub: String) -> Result<impl View> {
+    Ok(view! {
         <div class="proj-card">
             <div class="proj-label">(label)</div>
             <div class="proj-val">(km) " km"</div>
             <div class="proj-sub">(sub)</div>
         </div>
-    }
+    })
 }
 
-// Keeps `View` in scope for the component macro's generated signatures.
-const _: Option<View> = None;

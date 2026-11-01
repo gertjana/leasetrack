@@ -6,7 +6,7 @@
 use topcoat::{
     Result,
     context::Cx,
-    view::{View, component, view},
+    view::{Child, View, component, view},
 };
 
 use super::AppEnv;
@@ -26,12 +26,12 @@ pub async fn document(
     #[default("")] body_class: &str,
     #[default(None)] script: Option<&str>,
     #[default(false)] no_referrer: bool,
-    child: View,
-) -> Result {
+    child: Child<'_>,
+) -> Result<impl View> {
     let app_env = super::app_env(cx);
     let centered = body_class.contains("centered");
 
-    view! {
+    Ok(view! {
         <!DOCTYPE html>
         <html lang="en">
             <head>
@@ -51,18 +51,18 @@ pub async fn document(
                 (child)
             </body>
         </html>
-    }
+    })
 }
 
 /// A loud reminder that a non-production deployment is not the real thing.
 #[component]
-async fn preview_banner(app_env: &AppEnv, spacer: bool) -> Result {
-    view! {
+async fn preview_banner(app_env: &AppEnv, spacer: bool) -> Result<impl View> {
+    Ok(view! {
         if !app_env.is_production() {
             <div class="preview-banner">"⚠ PREVIEW — " (app_env.name())</div>
             if spacer {
                 <div class="banner-spacer"></div>
             }
         }
-    }
+    })
 }

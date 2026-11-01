@@ -19,5 +19,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The web pages are rendered by Topcoat; `tower` bridges its router into the
 # axum server that still owns the JSON API.
-topcoat = { version = "0.6.2", features = ["tower"] }
+topcoat = { version = "0.11", features = ["tower"] }
 reqwest = { version = "0.13", features = ["json"] }
